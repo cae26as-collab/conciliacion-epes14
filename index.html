@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Conciliación POF — EPES N° 14</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root { --azul:#1F4E78; --azul2:#2E75B6; --gris:#f4f6f8; --borde:#d0d7de; --rojo:#c0392b; --verde:#1e8449; --amar:#b9770e; }
 * { box-sizing:border-box; margin:0; }
@@ -52,6 +53,7 @@ h2 { font-size:16px; color:var(--azul); margin-bottom:10px; } h3 { font-size:14p
   <button data-t="datos">Datos</button>
   <button data-t="validador">Validador</button>
   <button data-t="reportes">Reportes</button>
+  <button data-t="generar">Generar</button>
   <button data-t="auditoria" id="tabAud" style="display:none">Auditoría</button>
 </nav>
 <main>
@@ -70,6 +72,7 @@ h2 { font-size:16px; color:var(--azul); margin-bottom:10px; } h3 { font-size:14p
     <section id="v-datos" style="display:none"></section>
     <section id="v-validador" style="display:none"></section>
     <section id="v-reportes" style="display:none"></section>
+    <section id="v-generar" style="display:none"></section>
     <section id="v-auditoria" style="display:none"></section>
   </div>
 </main>
@@ -82,7 +85,7 @@ let API = localStorage.getItem('conc_api') || '';
 let TOKEN = localStorage.getItem('conc_token') || '';
 let ROL = localStorage.getItem('conc_rol') || 'consulta';
 let BD = null;                       // {ENTIDAD:{cols:[],filas:[[]]}}
-const PLAN_MAP = { 'CBS (672/19)':'CBS-672', 'BCS':'BCS', 'BCN':'BCN', 'BEA':'BEA' };
+const PLAN_MAP = { 'CBS (672/19)':'CBS-672', 'BCS':'BCS', 'BCN':'BCN', 'BEA':'BEA', 'BEA-EPJA':'BEA-EPJA' };
 const PLAN_INV = Object.fromEntries(Object.entries(PLAN_MAP).map(([a,b])=>[b,a]));
 
 function msg(t, ms=3500){ const m=document.getElementById('msg'); m.textContent=t; m.style.display='block'; clearTimeout(m._t); m._t=setTimeout(()=>m.style.display='none', ms); }
@@ -146,7 +149,7 @@ document.getElementById('nav').addEventListener('click', e=>{
 });
 function render(tab){
   tab = tab || document.querySelector('nav button.act').dataset.t;
-  ({conciliador:rConciliador, datos:rDatos, validador:rValidador, reportes:rReportes, auditoria:rAuditoria})[tab]();
+  ({conciliador:rConciliador, datos:rDatos, validador:rValidador, reportes:rReportes, generar:rGenerar, auditoria:rAuditoria})[tab]();
 }
 
 /* ================= CONCILIADOR ================= */
@@ -157,8 +160,8 @@ function asigDe(plan, curso, div){
 }
 function rConciliador(){
   const v = document.getElementById('v-conciliador');
-  const planes=['CBS-672','BCS','BCN','BEA'];
-  const cursos = planes.includes(selPlan) && selPlan==='CBS-672' ? ['1°','2°','3°'] : ['4°','5°','6°'];
+  const planes=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
+  const cursos = selPlan==='CBS-672' ? ['1°','2°','3°'] : selPlan==='BEA-EPJA' ? ['M5','M6','M7','M8','M9','M10'] : ['4°','5°','6°'];
   if(!cursos.includes(selCurso)) selCurso=cursos[0];
   // divisiones presentes en asignaciones para ese plan/curso
   const iC=cols('ASIGNACIONES').indexOf('CURSO'), iP=cols('ASIGNACIONES').indexOf('PLAN DESTINO'), iD=cols('ASIGNACIONES').indexOf('DIV.');
@@ -328,6 +331,119 @@ function rReportes(){
   <div class="card"><h3>Suplencias activas (${supl.length})</h3>
    <div class="tabla-wrap"><table><tr><th>Suplente</th><th>CUPOF</th></tr>${supl.map(f=>`<tr><td>${esc(f[1])}</td><td>${esc(f[2])}</td></tr>`).join('')}</table></div></div>`;
   document.getElementById('rDoc').onchange=e=>{repDoc=e.target.value; rReportes();};
+}
+
+/* ================= GENERAR (planillas y actas) ================= */
+function rGenerar(){
+  const v=document.getElementById('v-generar');
+  const docs=filas('DOCENTES').map(f=>f[1]).sort();
+  v.innerHTML=`
+  <div class="card"><h2>Planilla de Conciliación — 1ª etapa (DES)</h2>
+   <p class="mini">Genera el Excel con las 4 hojas del modelo oficial, llenas con los datos actuales de la base.</p>
+   <br><button class="b" onclick="genPlanilla()">Descargar planilla (.xlsx)</button></div>
+  <div class="card"><h2>Actas de reubicación por docente</h2>
+   <p class="mini">Acta de acuerdo con destino (asignaciones en planes nuevos) y origen (designaciones vigentes).</p>
+   <div class="fila" style="margin-top:8px">
+    <div><label>Docente</label><select id="gDoc">${docs.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+    <div><label>Mes/Año del acta</label><input id="gFecha" value="marzo de 2026" style="width:140px"></div>
+    <button class="b" onclick="genActa(document.getElementById('gDoc').value)">Generar acta (.doc)</button>
+    <button class="b sec" onclick="genActasTodas()">Generar TODAS las actas</button>
+   </div></div>`;
+}
+
+/* ---- Planilla de Conciliación (modelo oficial, 4 hojas) ---- */
+function genPlanilla(){
+  if(typeof XLSX==='undefined') return msg('No cargó la librería de Excel; revisá la conexión');
+  const wb=XLSX.utils.book_new();
+  const norm=s=>String(s??'').toUpperCase().replace(/\s+/g,'');
+  // --- Hoja 1: INSTRUMENTOS DE CREACIÓN (cursos + carga de la caja)
+  const h1=[["CURSO","DIVISIÓN","PLAN DE ESTUDIO","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO LEGAL","CARGA HORARIA"]];
+  filas('CURSOS').forEach(f=>{
+    const instr=f[4]||f[6]||'', fecha=(f[4]?f[5]:f[7])||'';
+    const caja=filas('ESPACIOS').filter(e=>e[0]===f[0]&&String(e[1])===String(f[1])&&e[4]!=='Sí').reduce((a,e)=>a+hsNum(e[3]),0);
+    h1.push([f[1],f[2],f[0],instr,fecha,caja||'']);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h1), "INSTRUMENTOS DE CREACIÓN");
+  // --- Hoja 2: HORAS QUE POSEE LA INSTITUCION (una fila por CUPOF de horas)
+  const h2=[["CURSO","DIVISION","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","ESPACIO CURRICULAR","CARGA HORARIA","CUPOF","ADECUACIÓN (PLAN NUEVO — ESPACIO — CURSO — HS)","DOCENTE A CARGO","SITUACIÓN REVISTA","OBSERVACIONES"]];
+  const desg=filas('DESIGNACIONES');
+  const asg=filas('ASIGNACIONES'); const aC=cols('ASIGNACIONES');
+  const iAcu=aC.indexOf('CUPOF (texto origen)'), iAp=aC.indexOf('PLAN DESTINO'), iAc2=aC.indexOf('CURSO'), iAe=aC.indexOf('ESPACIO DESTINO'), iAh=aC.indexOf('HS');
+  filas('CUPOF').filter(f=>f[1]==='Horas').forEach(f=>{
+    const k=norm(f[0]);
+    const titulares=desg.filter(d=>norm(d[2])===k&&d[3]!=='SUPLENTE');
+    const suplentes=desg.filter(d=>norm(d[2])===k&&d[3]==='SUPLENTE');
+    const quien=titulares[0]||suplentes[0]||['','(SIN DESIGNACIÓN)','',''];
+    const obs=[suplentes.length&&titulares.length?('Suplente: '+suplentes.map(x=>x[1]).join(', ')):'',
+               !titulares.length&&suplentes.length?'Suplente sin titular/interino':''].filter(Boolean).join('. ');
+    const dest=asg.filter(a=>norm(a[iAcu]).includes(k.slice(0,32))).map(a=>`${a[iAp]} — ${a[iAe]} — ${a[iAc2]} (${a[iAh]} hs)`).join(' / ');
+    h2.push([f[4],f[5],f[10]||'',f[11]||'',f[7],f[3],f[8],f[0],dest,quien[1],quien[3]||quien[2]||'',obs]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h2), "HORAS QUE POSEE LA INSTITUCION");
+  // --- Hoja 3: DETALLE DE CARGOS
+  const h3=[["CARGO","NUMERO DE CARGO","INSTRUMENTO LEGAL DE CREACIÓN (del cargo)","FECHA DEL INSTRUMENTO","CUPOF QUE CUBRE EL CARGO","OCUPANTE","SITUACIÓN REVISTA","SUPLENTE","OBSERVACIONES"]];
+  filas('CARGOS').forEach(f=>{
+    const cup=filas('CUPOF').find(c=>c[1]==='Cargo'&&c[2]===f[1]&&String(f[5]||'').toUpperCase().includes(String((filas('DESIGNACIONES').find(d=>norm(d[2])===norm(c[0]))||[])[1]||'ZZZ').split(' ')[0]));
+    h3.push([f[0],f[2],f[3],f[4],cup?cup[0]:'',f[5],f[6],f[7],f[8]]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h3), "DETALLE DE CARGOS ");
+  // --- Hoja 4: PROPUESTA DE CREACION DE CARGOS (encabezado del modelo, a completar)
+  const h4=[["AREA","CARGO (PTP 12 - PTP 18 - PTP 24 - PTP 30 - PTC 36)","ESPACIOS CURRICULARES QUE SE VAN A ASIGNAR A ESOS CARGOS","CARGA HORARIA DEL ESPACIO CURRICULAR","ESPACIOS CURRICULARES DE HORAS SUELTAS PARA COMPLETAR LA CAJA CURRICULAR","HORAS CATEDRAS"]];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h4), "PROPUESTA DE CREACION DE CARGOS");
+  XLSX.writeFile(wb, "PLANILLA Conciliacion 1ER ETAPA - EPES14.xlsx");
+  msg('Planilla generada');
+}
+
+/* ---- Acta de reubicación (.doc por docente) ---- */
+function actaHTML(docente){
+  const d=filas('DOCENTES').find(f=>f[1]===docente)||['',docente];
+  const dni=String(d[0]).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  const norm=s=>String(s??'').toUpperCase().replace(/\s+/g,'');
+  const aC=cols('ASIGNACIONES');
+  const iAp=aC.indexOf('PLAN DESTINO'), iAc=aC.indexOf('CURSO'), iAd=aC.indexOf('DIV.'), iAt=aC.indexOf('TURNO'),
+        iAe=aC.indexOf('ESPACIO DESTINO'), iAh=aC.indexOf('HS'), iAdo=aC.indexOf('DOCENTE'), iAo=aC.indexOf('OBS.');
+  const ap1=norm(docente).slice(0,9);
+  const dest=filas('ASIGNACIONES').filter(a=>norm(a[iAdo]).includes(ap1)||ap1.includes(norm(a[iAdo]).slice(0,9))&&a[iAdo]);
+  const orig=filas('DESIGNACIONES').filter(f=>f[1]===docente);
+  const cupIdx={}; filas('CUPOF').forEach(c=>cupIdx[norm(c[0])]=c);
+  const fecha=document.getElementById('gFecha')?.value||'marzo de 2026';
+  const filaD=dest.map(a=>`<tr><td>${esc(a[iAe])}</td><td>${esc(a[iAc])}</td><td>${esc(a[iAd])}</td><td>${esc(a[iAh])}</td><td>${esc(a[iAt])}</td><td>${esc(a[iAp])}</td><td>${esc(a[iAo])}</td></tr>`).join('');
+  const filaO=orig.map(f=>{const c=cupIdx[norm(f[2])]||[];
+    return `<tr><td>${esc(c[3]||'')}</td><td>${esc(c[4]||'')}</td><td>${esc(c[5]||'')}</td><td>${esc(c[8]||'')}</td><td>${esc(f[3])}</td><td>${esc(f[5]||'')}</td><td>${esc(f[2])}</td></tr>`;}).join('');
+  const th='background:#1F4E78;color:#fff;padding:4px 6px;border:1px solid #999;font-size:10pt';
+  return `<html xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8">
+  <style>body{font-family:Arial;font-size:11pt}td{border:1px solid #999;padding:4px 6px;font-size:10pt}table{border-collapse:collapse;width:100%}</style></head><body>
+  <p style="text-align:center;font-weight:bold;font-size:14pt">ACTA DE ACUERDO</p>
+  <p style="text-align:justify">En el marco de la transformación educativa y a efectos de prever la organización curricular y su implementación en el presente ciclo, el/la docente <b>${esc(docente)}</b>,
+  DNI N° <b>${dni}</b>, ACUERDA asumir la responsabilidad del dictado del espacio curricular, según el siguiente detalle:</p>
+  <table><tr><th style="${th}">ESPACIO</th><th style="${th}">CURSO</th><th style="${th}">DIV./MÓD.</th><th style="${th}">CARGA HORA</th><th style="${th}">TURNO</th><th style="${th}">PLAN</th><th style="${th}">OBSERVACIONES</th></tr>${filaD||'<tr><td colspan="7">(sin asignaciones registradas)</td></tr>'}</table>
+  <p>A tal efecto, el/la docente mencionado/a, acepta efectuar sus horas de:</p>
+  <table><tr><th style="${th}">ESPACIO</th><th style="${th}">CURSO</th><th style="${th}">DIV.</th><th style="${th}">CARGA HORA</th><th style="${th}">SIT. REVISTA</th><th style="${th}">OBS.</th><th style="${th}">CUPOF</th></tr>${filaO||'<tr><td colspan="7">(sin designaciones registradas)</td></tr>'}</table>
+  <p style="text-align:justify">El presente acuerdo tiene carácter de organizativo, trámite que debe continuar ante la Dirección de Educación Secundaria, a fin de dictar el instrumento legal pertinente que avale tal determinación.</p>
+  <p>En Comandante Fontana, Provincia de Formosa, a los ………. días del mes de ${esc(fecha)}.</p>
+  <br><p>Firma del docente ………………………………………</p>
+  <p>Aclaración ……………………………………………………</p>
+  <p>D.N.I. N° …………………………………………….</p></body></html>`;
+}
+function descargarDoc(nombre, html){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/msword'}));
+  a.download=nombre; a.click();
+}
+function genActa(docente){
+  descargarDoc(`Acta reubicacion - ${docente}.doc`, actaHTML(docente));
+  msg('Acta generada: '+docente);
+}
+async function genActasTodas(){
+  const norm=s=>String(s??'').toUpperCase().replace(/\s+/g,'');
+  const aC=cols('ASIGNACIONES'); const iAdo=aC.indexOf('DOCENTE');
+  const conDestino=filas('DOCENTES').map(f=>f[1]).filter(n=>{
+    const ap=norm(n).slice(0,9);
+    return filas('ASIGNACIONES').some(a=>a[iAdo]&&norm(a[iAdo]).includes(ap.slice(0,8)));
+  });
+  if(!confirm(`Se generarán ${conDestino.length} actas (solo docentes con asignaciones). ¿Continuar?`)) return;
+  for(const n of conDestino){ descargarDoc(`Acta reubicacion - ${n}.doc`, actaHTML(n)); await new Promise(r=>setTimeout(r,400)); }
+  msg('Actas generadas: '+conDestino.length);
 }
 
 /* ================= AUDITORÍA ================= */
