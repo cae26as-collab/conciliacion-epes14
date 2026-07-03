@@ -119,6 +119,34 @@ function cupKey(s){
   x='0053200'+x.slice(x.indexOf('53200')+5);
   return x.replace(/-{2,}/g,'-').replace(/[-/.:]+$/,'');
 }
+/** Carga (horas) codificada en el propio texto de la CUPOF: el número que sigue a "GH" si existe
+ *  (GH4→4, GH8→8), si no el número final antes del /sufijo (típico de PHC individuales: "...-CBOI-3"→3).
+ *  Devuelve null si no puede interpretarlo. */
+function cargaDesdeCupof(s){
+  const x=deacc(String(s??'')).toUpperCase().replace(/\s+/g,'');
+  const mGH=x.match(/GH(\d+)(?:\/\d+)?$/);
+  if(mGH)return Number(mGH[1]);
+  const mFin=x.match(/-(\d+)(?:\/\d+)?$/);
+  if(mFin)return Number(mFin[1]);
+  return null;
+}
+/** Quita todo espacio interno del texto de una CUPOF (no debe haber espacios entre guiones ni
+ *  dentro del nombre del espacio curricular). No toca el separador entre varias CUPOF pegadas:
+ *  usar SIEMPRE después de dividir, sobre una sola CUPOF por celda. */
+function compactarCupof(s){return String(s??'').replace(/\s+/g,'');}
+/** Descompone una CUPOF (ya pasada por cupKey) en sus componentes estructurales, ignorando el
+ *  nombre del espacio (que es texto libre y puede tener variantes de abreviatura/ortografía).
+ *  Sirve para agrupar y detectar si dos textos distintos son en realidad la misma CUPOF. */
+function estructuraCupof(s){
+  const k=cupKey(s); if(!k)return null;
+  const partes=k.split('-');
+  if(partes.length<7)return null;
+  const n=partes.length;
+  const carga=partes[n-1], plan=partes[n-2], turno=partes[n-3], div=partes[n-4], curso=partes[n-5];
+  const tipo=partes[1];
+  const espacio=partes.slice(2,n-5).join('-');
+  return {tipo,espacio,curso,div,turno,plan,carga,estructural:[tipo,curso,div,turno,plan,carga].join('|')};
+}
 
 /* ============ MATCHER DE ESPACIOS ============ */
 const ALIAS={'STGEOGRAFIA':'SEMINARIOSOTALLERESDEGEOGRAFIA','STHISTORIA':'SEMINARIOSOTALLERESDEHISTORIA',
@@ -212,7 +240,7 @@ function rConciliador(){
   const caja=cajaDe(selPlan,selCurso,true);
   const asigs=asigsDe(selPlan,selCurso,selDiv);
   const cargas=cargasCupof();
-  const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAo=ix('ASIGNACIONES','OBS.');
+  const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAo=ix('ASIGNACIONES','OBS.'),iAn=ix('ASIGNACIONES','N° PARCIAL');
   const porEsp={}; caja.forEach(c=>porEsp[c.n]=[]);
   const sinMatch=[];
   asigs.forEach(x=>{const m=matchEspacio(x.f[iAe],caja); if(m)porEsp[m.n].push(x); else sinMatch.push(x);});
@@ -247,7 +275,7 @@ function rConciliador(){
          <td>${primera?est:''} ${ROL==='admin'?`<a href="#" onclick="editIdx=${i};editDoc='';addEsp=null;rConciliador();return false" title="editar">✎</a> <a href="#" onclick="accion(this,()=>quitarAsig(${i}));return false" title="quitar">🗑</a>`:''}</td></tr>`;
       } else {
         html+=`<tr>${primera?`<td class="esp" rowspan="${nfilas}">${esc(c.nom)}</td><td rowspan="${nfilas}">${c.hs}</td>`:''}
-         ${mismoDocAntes?'':`<td rowspan="${corr}">${esc(f[iAdo])}</td>`}<td class="cupofcell">${esc(f[iAcu])}${f[iAo]?` <span class="mini">(${esc(f[iAo])})</span>`:''}</td>
+         ${mismoDocAntes?'':`<td rowspan="${corr}">${esc(f[iAdo])}</td>`}<td class="cupofcell">${esc(f[iAcu])}${iAn>-1&&f[iAn]?` <span class="pill info">${esc((f[iAn].match(/P\d+$/)||[''])[0])}</span>`:''}${f[iAo]?` <span class="mini">(${esc(f[iAo])})</span>`:''}</td>
          <td>${esc(f[iAh])}</td>
          <td>${primera?est:''} ${ROL==='admin'?`<a href="#" onclick="editIdx=${i};editDoc='';addEsp=null;rConciliador();return false" title="editar">✎</a> <a href="#" onclick="accion(this,()=>quitarAsig(${i}));return false" title="quitar">🗑</a>`:''}</td></tr>`;
       }
@@ -287,6 +315,32 @@ function cupofSelect(docente,cargas,actual){
   }).filter(Boolean).join('');
   return opts?`<select id="${actual?'edCup':'addCup'}" class="cupofcell" style="max-width:420px">${opts}</select>`:'<span class="mini">sin CUPOF disponibles</span>';
 }
+/** Recalcula y guarda el código de "N° PARCIAL" (CLAVE-P1, CLAVE-P2, ...) de todas las filas de
+ *  ASIGNACIONES que comparten una misma clave de CUPOF, en el orden en que aparecen. Si solo hay una
+ *  fila para esa clave (no es parcial) deja la columna vacía. No hace nada si la columna todavía no
+ *  existe en la base (falta correr agregarColumnaParcial() una vez desde Apps Script). */
+async function sincronizarParciales(clave){
+  const iN=ix('ASIGNACIONES','N° PARCIAL'); if(iN===-1||!clave)return;
+  const iCu=ix('ASIGNACIONES','CUPOF (texto origen)');
+  const grupo=filas('ASIGNACIONES').map((f,i)=>({f,i})).filter(({f})=>cupKey(f[iCu])===clave);
+  for(let idx=0;idx<grupo.length;idx++){
+    const {f,i}=grupo[idx];
+    const codigo=grupo.length<2?'':clave+'-P'+(idx+1);
+    if((f[iN]||'')!==codigo){
+      const nuevos=f.slice(); nuevos[iN]=codigo;
+      try{await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:i+1,valores:nuevos});BD['ASIGNACIONES'].filas[i]=nuevos;}catch(e){}
+    }
+  }
+}
+async function sincronizarTodosLosParciales(){
+  const iN=ix('ASIGNACIONES','N° PARCIAL');
+  if(iN===-1)return msg('Falta la columna "N° PARCIAL" en ASIGNACIONES: correr agregarColumnaParcial() una vez desde Apps Script.',6000);
+  const iCu=ix('ASIGNACIONES','CUPOF (texto origen)');
+  const claves=[...new Set(filas('ASIGNACIONES').map(f=>cupKey(f[iCu])).filter(Boolean))];
+  let n=0; for(const clave of claves){ await sincronizarParciales(clave); n++; if(n%25===0)msg(`Sincronizando parciales… ${n}/${claves.length}`,3000); }
+  msg('Códigos de parcial sincronizados ('+claves.length+' CUPOF revisadas)');
+  render();
+}
 async function guardarEdicion(i,espN){
   const f=BD['ASIGNACIONES'].filas[i];
   const iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO');
@@ -312,7 +366,10 @@ async function guardarEdicion(i,espN){
     if(hs<=0)return msg('Sin horas disponibles');
   }
   const nuevos=f.slice(); nuevos[iAcu]=cup; nuevos[iAdo]=doc; nuevos[iAh]=String(hs); nuevos[iAe]=c?c.nom:f[iAe];
-  try{await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:i+1,valores:nuevos});BD['ASIGNACIONES'].filas[i]=nuevos;editIdx=null;editDoc='';msg('Actualizado');rConciliador();}
+  const claveVieja=cupKey(f[iAcu]), claveNueva=cupKey(cup);
+  try{await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:i+1,valores:nuevos});BD['ASIGNACIONES'].filas[i]=nuevos;editIdx=null;editDoc='';
+    await sincronizarParciales(claveNueva); if(claveVieja&&claveVieja!==claveNueva)await sincronizarParciales(claveVieja);
+    msg('Actualizado');rConciliador();}
   catch(e){msg('Error: '+e.message);}
 }
 async function guardarAsig(espN,falta){
@@ -328,7 +385,9 @@ async function guardarAsig(espN,falta){
   const aC=cols('ASIGNACIONES');
   const vals=aC.map(col=>({'FUENTE':'app','PLAN DESTINO':PLAN_INV[selPlan],'CURSO':selCurso,'DIV.':selDiv,
     'TURNO':selPlan==='BEA-EPJA'?'NOCHE':'','ESPACIO DESTINO':espacio,'HS':hs,'CUPOF (texto origen)':cup,'DOCENTE':addDoc,'OBS.':''}[col]??''));
-  try{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));addEsp=null;addDoc='';msg('Asignado');rConciliador();}
+  try{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));addEsp=null;addDoc='';
+    await sincronizarParciales(cupKey(cup));
+    msg('Asignado');rConciliador();}
   catch(e){msg('Error: '+e.message);}
 }
 async function repararBase(){
@@ -354,28 +413,38 @@ async function repararBase(){
       if(t.partes.length>1){
         const hsTok=String(t.f[iAh]).match(/\d+(?:[.,]\d+)?/g)||[]; let tk=0;
         const hsDe=p=>{const mp=p.match(/\(\s*(\d+[.,]?\d*)\s*h/i);return mp?mp[1]:(hsTok[tk++]??'');};
-        f[iAcu]=t.partes[0]; f[iAh]=hsDe(t.partes[0]);
+        f[iAcu]=compactarCupof(t.partes[0]); f[iAh]=hsDe(t.partes[0]);
         await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:t.i+1,valores:f});
         BD['ASIGNACIONES'].filas[t.i]=f.map(x=>String(x??''));
         for(let p=1;p<t.partes.length;p++){
-          const nf=t.f.slice(); nf[iAcu]=t.partes[p]; nf[iAh]=hsDe(t.partes[p]);
+          const nf=t.f.slice(); nf[iAcu]=compactarCupof(t.partes[p]); nf[iAh]=hsDe(t.partes[p]);
           nf[iAo]=((t.f[iAo]||'')+' (división)').trim(); if(t.canon)nf[iAe]=t.canon;
           await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:nf});
           BD['ASIGNACIONES'].filas.push(nf.map(x=>String(x??'')));
         }
-      } else if(cambio){
-        await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:t.i+1,valores:f});
-        BD['ASIGNACIONES'].filas[t.i]=f.map(x=>String(x??''));
+      } else {
+        // aunque no haya división ni rename, aprovechamos para compactar espacios internos de la CUPOF
+        const compacta=compactarCupof(f[iAcu]);
+        if(compacta!==f[iAcu]){ f[iAcu]=compacta; cambio=true; }
+        if(cambio){
+          await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:t.i+1,valores:f});
+          BD['ASIGNACIONES'].filas[t.i]=f.map(x=>String(x??''));
+        }
       }
     }catch(e){msg('Error en fila '+(t.i+2)+': '+e.message,6000);}
     hechos++; if(hechos%15===0)msg(`Reparando… ${hechos}/${tareas.length}`,3000);
   }
+  msg('Sincronizando códigos de parcial…',6000);
+  try{await sincronizarTodosLosParciales();}catch(e){}
   msg('Reparación completa. Recargando…',5000);
   const j=await apiGet({action:'bd',token:TOKEN}); BD=j.bd; render();
 }
 async function quitarAsig(i){
   if(!confirm('¿Quitar esta asignación?'))return;
-  try{await apiPost({action:'borrar',entidad:'ASIGNACIONES',fila:i+1});BD['ASIGNACIONES'].filas.splice(i,1);msg('Quitada');rConciliador();}
+  const iCu=ix('ASIGNACIONES','CUPOF (texto origen)'); const clave=cupKey(BD['ASIGNACIONES'].filas[i][iCu]);
+  try{await apiPost({action:'borrar',entidad:'ASIGNACIONES',fila:i+1});BD['ASIGNACIONES'].filas.splice(i,1);
+    await sincronizarParciales(clave);
+    msg('Quitada');rConciliador();}
   catch(e){msg('Error: '+e.message);}
 }
 async function editHs(i){
@@ -447,8 +516,10 @@ function exportCSV(ent){
 
 /* ============ VALIDADOR ============ */
 let ordSin={col:0,asc:true};
-function rValidador(){
-  const v=document.getElementById('v-validador');const problemas=[];
+/** Todo el cálculo de validación (sin renderizar HTML), reutilizado por rValidador() y por genPlanilla()
+ *  para avisar de observaciones "graves" pendientes antes de descargar la planilla oficial. */
+function calcularValidacion(){
+  const problemas=[];
   const add=(nivel,txt)=>problemas.push({nivel,txt});
   const dnis=new Set(filas('DOCENTES').map(f=>String(f[0])));
   const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
@@ -504,8 +575,35 @@ function rValidador(){
     const f=c.fila; return {plan:f[ix('CUPOF','PLAN')],esp:f[ix('CUPOF','ESPACIO')],cup:f[0],usado:c.usado,carga:c.carga};
   });
   excedidas.forEach(e=>add('grave',`CUPOF ${e.cup} (${e.esp}, ${e.plan}): tiene asignadas ${e.usado} hs sobre una carga de ${e.carga} hs — hay que reducir alguna asignación`));
+  // ====== CARGA vs. lo que indica el propio texto de la CUPOF (GH# o número final) ======
+  const cargaMal=[];
+  filas('CUPOF').forEach((f,i)=>{
+    if(f[ix('CUPOF','CLASE')]!=='Horas')return;
+    const parsed=cargaDesdeCupof(f[0]); if(parsed===null)return;
+    const actual=unNum(f[ix('CUPOF','CARGA')]);
+    if(parsed!==actual)cargaMal.push({i,f,parsed,actual});
+  });
+  cargaMal.forEach(x=>add('grave',`CUPOF ${x.f[0]}: columna CARGA dice ${x.actual} pero el propio texto indica ${x.parsed} hs`));
+  // ====== Posibles CUPOF duplicadas por variante de ortografía del espacio (misma estructura numérica) ======
+  const gruposEstructura={};
+  filas('CUPOF').forEach(f=>{
+    if(f[ix('CUPOF','CLASE')]!=='Horas')return;
+    const e=estructuraCupof(f[0]); if(!e)return;
+    (gruposEstructura[e.estructural]=gruposEstructura[e.estructural]||[]).push({espacio:e.espacio,cup:f[0]});
+  });
+  const variantesCupof=Object.entries(gruposEstructura).map(([key,items])=>({key,items}))
+    .filter(g=>new Set(g.items.map(x=>x.espacio)).size>1);
+  return {problemas,sinUsar,excedidas,huerfanas,cargaMal,variantesCupof,
+    iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,HD};
+}
+function rValidador(){
+  const v=document.getElementById('v-validador');
+  const {problemas,sinUsar,excedidas,huerfanas,cargaMal,variantesCupof,
+    iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,HD}=calcularValidacion();
   v.innerHTML=`<div class="card"><h2>Validador</h2>
-   <p class="mini">${problemas.length} observaciones · ${sinUsar.length} CUPOF con horas disponibles</p>
+   <div class="fila" style="margin-bottom:8px">
+    <p class="mini" style="margin:0">${problemas.length} observaciones · ${sinUsar.length} CUPOF con horas disponibles</p>
+    ${ROL==='admin'?`<button class="b sec mini" onclick="accion(this,sincronizarTodosLosParciales)">🔁 Sincronizar N° PARCIAL</button>`:''}</div>
    ${problemas.map(p=>`<div class="problema ${p.nivel==='leve'?'leve':''}">${esc(p.txt)}</div>`).join('')||'<p>Sin problemas ✔</p>'}</div>
   <div class="card"><h3>CUPOF de horas sin asignar / con saldo disponible</h3>
    <div class="tabla-wrap"><table><tr>${HD.map((h,i)=>`<th class="orden" onclick="ordSin={col:${i},asc:${ordSin.col===i?!ordSin.asc:true}};rValidador()">${h} ${ordSin.col===i?(ordSin.asc?'▲':'▼'):''}</th>`).join('')}</tr>
@@ -519,11 +617,55 @@ function rValidador(){
    ${huerfanas.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>CUPOF (texto origen)</th><th></th></tr>
     ${huerfanas.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(f[iAdoAud])}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
      <td>${ROL==='admin'?`<a href="#" onclick="editarFila('ASIGNACIONES',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
+  </div>
+  <div class="card"><h3>CARGA vs. lo que indica el propio texto de la CUPOF</h3>
+   <p class="mini">La cantidad de horas está codificada en la propia CUPOF: el número que sigue a "GH" (GH4→4, GH8→8) o, si no hay "GH", el número final antes del /sufijo (típico de PHC individuales). Estas filas no coinciden con la columna CARGA de la hoja CUPOF.</p>
+   ${cargaMal.length?`<div class="tabla-wrap"><table><tr><th>CUPOF</th><th>CARGA actual</th><th>Según el texto</th><th></th></tr>
+    ${cargaMal.map(x=>`<tr><td class="cupofcell">${esc(x.f[0])}</td><td>${x.actual}</td><td>${x.parsed}</td><td>${ROL==='admin'?`<a href="#" onclick="editarFila('CUPOF',${x.i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
+  </div>
+  <div class="card"><h3>Posibles CUPOF duplicadas por variante de ortografía del espacio</h3>
+   <p class="mini">Misma estructura (tipo · curso · división · turno · plan · carga) pero el nombre del espacio está escrito distinto en más de una fila de la hoja CUPOF. Puede ser la misma CUPOF cargada dos veces con otra redacción (unificar a mano en Datos) o dos espacios genuinamente distintos que coinciden en esos datos (no hacer nada).</p>
+   ${variantesCupof.length?`<div class="tabla-wrap"><table><tr><th>ESTRUCTURA (tipo·curso·div·turno·plan·carga)</th><th>CUPOF</th><th>ESPACIO tal como está escrito</th></tr>
+    ${variantesCupof.map(g=>g.items.map((it,idx)=>`<tr>${idx===0?`<td rowspan="${g.items.length}" class="mini">${esc(g.key.replace(/\|/g,' · '))}</td>`:''}<td class="cupofcell">${esc(it.cup)}</td><td>${esc(it.espacio)}</td></tr>`).join('')).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>`;
 }
 
 /* ============ REPORTES ============ */
-let repTab='docentes', repDoc='';
+let repTab='docentes', repDoc='', ordBal={col:0,asc:true};
+/** Resumen por docente: horas declaradas por situación (Titular/Interino/Suplente, según DESIGNACIONES
+ *  y la CARGA real de cada CUPOF), total declarado, horas ya asignadas en el plan nuevo, disponible
+ *  (declarado - asignado), y el tiempo PTP/PTC que declara (si alguna de sus CUPOF pertenece a un tiempo). */
+function balanceDocentes(){
+  const cupIdxHoras={}; filas('CUPOF').forEach(f=>{ if(f[ix('CUPOF','CLASE')]==='Horas') cupIdxHoras[cupKey(f[0])]=f; });
+  const iAdo=ix('ASIGNACIONES','DOCENTE'), iAh=ix('ASIGNACIONES','HS');
+  const iSuf=ix('CUPOF','SUFIJO TIEMPO'), iCarga=ix('CUPOF','CARGA');
+  const iTt=ix('TIEMPOS','TIPO'), iTh=ix('TIEMPOS','HS');
+  const tiemposIdx={}; filas('TIEMPOS').forEach(t=>tiemposIdx[String(t[0])]=t);
+  const r1=n=>Math.round(n*10)/10;
+  const m={};
+  filas('DESIGNACIONES').forEach(d=>{
+    const dni=String(d[0]||'').trim(), nombre=d[1]||'', situ=String(d[3]||'').toUpperCase().trim();
+    const cf=cupIdxHoras[cupKey(d[2])];
+    const carga=cf?unNum(cf[iCarga]):0;
+    const key=dni||nombre; if(!key)return;
+    if(!m[key])m[key]={dni,nombre,titular:0,interino:0,suplente:0,otro:0,sufijos:new Set()};
+    if(!m[key].nombre)m[key].nombre=nombre;
+    if(situ==='TITULAR')m[key].titular+=carga;
+    else if(situ==='INTERINO')m[key].interino+=carga;
+    else if(situ==='SUPLENTE')m[key].suplente+=carga;
+    else m[key].otro+=carga;
+    if(cf&&cf[iSuf])m[key].sufijos.add(String(cf[iSuf]));
+  });
+  return Object.values(m).filter(r=>r.nombre).map(r=>{
+    const declarado=r1(r.titular+r.interino+r.suplente+r.otro);
+    const ap=normE(r.nombre).slice(0,9);
+    const asignado=r1(filas('ASIGNACIONES').filter(f=>f[iAdo]&&(normE(f[iAdo]).includes(ap.slice(0,8))||ap.includes(normE(f[iAdo]).slice(0,8)))).reduce((a,f)=>a+unNum(f[iAh]),0));
+    const tsufs=[...r.sufijos].map(s=>tiemposIdx[s]).filter(Boolean);
+    const tiempo=tsufs.length?tsufs.map(t=>`${t[iTt]||''} ${t[iTh]||''}hs`).join(' / '):'';
+    return {nombre:r.nombre,dni:r.dni,titular:r1(r.titular),interino:r1(r.interino),suplente:r1(r.suplente),
+      declarado,asignado,disponible:r1(declarado-asignado),tiempo};
+  });
+}
 function rReportes(){
   const v=document.getElementById('v-reportes');
   const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
@@ -553,7 +695,7 @@ function rReportes(){
     ${desg.map(f=>{const c=cupIdx[cupKey(f[2])]||[];return `<tr><td class="cupofcell">${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(c[ix('CUPOF','INSTRUMENTO')]||'')}</td><td>${esc(c[ix('CUPOF','FECHA')]||'')}</td></tr>`;}).join('')}</table></div>
     <h3>Asignaciones en planes nuevos (${asg.length})</h3>
     <div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>DIV.</th><th>ESPACIO</th><th>HS PLAN</th><th>CUPOF ASIGNADA</th><th>HORAS</th></tr>${filasAsig}</table></div>`;
-  } else {
+  } else if(repTab==='supl'){
     const dniDe={};filas('DOCENTES').forEach(f=>dniDe[f[1]]=f[0]);
     const desg=filas('DESIGNACIONES');
     const supl=desg.filter(f=>f[3]==='SUPLENTE').map(f=>{
@@ -566,10 +708,19 @@ function rReportes(){
     cuerpo=`<h3>Suplencias activas (${supl.length})</h3>
     <div class="tabla-wrap"><table><tr><th>AGENTE</th><th>DNI</th><th>CUPOF</th><th>AGENTE TIT/INT</th><th>DNI</th><th>OBSERVACIÓN</th></tr>
     ${supl.map(r=>`<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td class="cupofcell">${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td><td>${esc(r[5])}</td></tr>`).join('')}</table></div>`;
+  } else if(repTab==='balance'){
+    const bal=balanceDocentes();
+    const BHD=['DOCENTE','DNI','TITULAR','INTERINO','SUPLENTE','TOTAL DECLARADO','ASIGNADO','DISPONIBLE','TIEMPO (PTP/PTC)'];
+    const filasArr=bal.map(r=>[r.nombre,r.dni,r.titular,r.interino,r.suplente,r.declarado,r.asignado,r.disponible,r.tiempo]);
+    filasArr.sort((a,b)=>{const x=a[ordBal.col],y=b[ordBal.col];const cmp=(typeof x==='number')?(x-y):(String(x)<String(y)?-1:String(x)>String(y)?1:0);return cmp*(ordBal.asc?1:-1);});
+    cuerpo=`<p class="mini">Horas declaradas (Titular+Interino+Suplente, según DESIGNACIONES y la carga real de cada CUPOF) vs. horas ya asignadas en el plan nuevo. "Disponible" ≠ 0 no siempre es un error — puede ser una licencia cubierta por un suplente, o simplemente falta terminar de asignar. Usalo como punto de partida para revisar, no como veredicto.</p>
+    <div class="tabla-wrap"><table><tr>${BHD.map((h,i)=>`<th class="orden" onclick="ordBal={col:${i},asc:${ordBal.col===i?!ordBal.asc:true}};rReportes()">${h} ${ordBal.col===i?(ordBal.asc?'▲':'▼'):''}</th>`).join('')}</tr>
+    ${filasArr.map(r=>`<tr${Math.abs(r[7])>0.01?' style="background:#fdf9ef"':''}><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${r[5]}</td><td>${r[6]}</td><td>${r[7]}</td><td>${esc(r[8])}</td></tr>`).join('')}</table></div>`;
   }
   v.innerHTML=`<div class="card"><div style="margin-bottom:10px">
     <span class="subtab ${repTab==='docentes'?'act':''}" onclick="repTab='docentes';rReportes()">Docentes</span>
-    <span class="subtab ${repTab==='supl'?'act':''}" onclick="repTab='supl';rReportes()">Suplencias</span></div>${cuerpo}</div>`;
+    <span class="subtab ${repTab==='supl'?'act':''}" onclick="repTab='supl';rReportes()">Suplencias</span>
+    <span class="subtab ${repTab==='balance'?'act':''}" onclick="repTab='balance';rReportes()">Balance por docente</span></div>${cuerpo}</div>`;
   if(repTab==='docentes')document.getElementById('rDoc').onchange=e=>{repDoc=e.target.value;rReportes();};
 }
 
@@ -593,6 +744,17 @@ function rGenerar(){
 }
 function genPlanilla(){
   if(typeof XLSX==='undefined')return msg('No cargó la librería de Excel');
+  const {problemas,excedidas,huerfanas,cargaMal}=calcularValidacion();
+  const graves=problemas.filter(p=>p.nivel==='grave');
+  if(graves.length){
+    const resumen=[
+      `${graves.length} observaciones graves en el Validador`,
+      excedidas.length?`· ${excedidas.length} CUPOF excedidas (asignado > carga)`:'',
+      huerfanas.length?`· ${huerfanas.length} asignaciones huérfanas (sin CUPOF real)`:'',
+      cargaMal.length?`· ${cargaMal.length} CUPOF con CARGA distinta a lo que indica su texto`:''
+    ].filter(Boolean).join('\n');
+    if(!confirm(resumen+'\n\n¿Generar la planilla igual? (revisá la pestaña Validador antes de enviarla a la DES)'))return;
+  }
   const wb=XLSX.utils.book_new();
   // Hoja 1: igual a la del modelo oficial (6 columnas, con fila de numeración)
   const h1=[["(1)","(2)","(3)","(4)","(5)","(6)"],
