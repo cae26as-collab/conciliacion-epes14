@@ -107,13 +107,17 @@ const ALIAS={'STGEOGRAFIA':'SEMINARIOSOTALLERESDEGEOGRAFIA','STHISTORIA':'SEMINA
 function sim3(a,b){if(a.length<3)return a===b?1:0;let s=0;for(let i=0;i<a.length-2;i++)if(b.includes(a.substr(i,3)))s++;return s/(a.length-2);}
 function matchEspacio(nombre, caja){ // caja: [{nom, n}]
   let n=normE(nombre); n=ALIAS[n]||n;
-  // regla dura: lengua extranjera / inglés nunca se confunde con Lengua
+  // reglas duras
   if(/LENG/.test(n)&&/EXT|INGLES/.test(n)) return caja.find(c=>/EXTRANJER/.test(c.n))||null;
+  if(/ETICA|CIUDADAN/.test(n)) return caja.find(c=>/ETICA|CIUDADAN|COMPROMISO/.test(c.n))||null;
   let f=caja.find(c=>c.n===n); if(f)return f;
   const strip=x=>x.replace(/(III|II|IV|VI|V|I)$/,'');
   const ns=strip(n);
   const elegibles=caja.filter(c=>!(/EXTRANJER/.test(c.n)&&!/EXT/.test(n)));
-  let cand=elegibles.filter(c=>{const cs=strip(c.n);return cs===ns||cs.startsWith(ns)||ns.startsWith(cs)||cs.includes(ns)||ns.includes(cs);});
+  // contención solo si el nombre más corto tiene al menos 5 letras (evita que "TIC" matchee dentro de "éTICa")
+  let cand=elegibles.filter(c=>{const cs=strip(c.n);if(cs===ns)return true;
+    if(Math.min(cs.length,ns.length)<5)return false;
+    return cs.startsWith(ns)||ns.startsWith(cs)||cs.includes(ns)||ns.includes(cs);});
   if(cand.length===1)return cand[0];
   if(cand.length>1){const ex=cand.find(c=>strip(c.n)===ns);if(ex)return ex;}
   let mejor=null,pm=0;
@@ -189,17 +193,22 @@ function rConciliador(){
   const sinMatch=[];
   asigs.forEach(x=>{const m=matchEspacio(x.f[iAe],caja); if(m)porEsp[m.n].push(x); else sinMatch.push(x);});
   const docentes=filas('DOCENTES').map(f=>f[1]).sort();
+  const combinadas=filas('ASIGNACIONES').filter(f=>String(f[ix('ASIGNACIONES','CUPOF (texto origen)')]).split(/[\s\/]+(?=0{0,4}\d?53200)/).filter(x=>/53200/.test(x)).length>1).length;
   let html='';
   caja.forEach(c=>{
     const lst=porEsp[c.n];
-    const asg=lst.reduce((a,{f})=>a+unNum(f[iAh]),0);
+    const asg=lst.reduce((a,{f})=>a+(cupKey(f[iAcu])?unNum(f[iAh]):0),0);
     const falta=c.hs-asg;
     const est=(asg===c.hs?'<span class="pill ok">completo</span>':asg<c.hs?`<span class="pill falta">faltan ${falta}</span>`:`<span class="pill exceso">excede ${asg-c.hs}</span>`)+(c.fuera?' <span class="pill info">fuera de caja</span>':'');
     const nfilas=lst.length+(ROL==='admin'&&falta>0?1:0)||1;
     let primera=true;
     if(!lst.length&&!(ROL==='admin'&&falta>0)){
       html+=`<tr><td class="esp">${esc(c.nom)}</td><td>${c.hs}</td><td colspan="3" class="mini">— sin asignaciones —</td><td>${est}</td></tr>`;return;}
-    lst.forEach(({f,i})=>{
+    lst.forEach(({f,i},pos)=>{
+      const esVac=!cupKey(f[iAcu]);
+      // docente una sola vez por corrida consecutiva
+      const mismoDocAntes=pos>0&&lst[pos-1].f[iAdo]===f[iAdo]&&!esVac&&editIdx!==i&&editIdx!==lst[pos-1].i;
+      let corr=1; if(!mismoDocAntes){for(let q=pos+1;q<lst.length;q++){if(lst[q].f[iAdo]===f[iAdo]&&editIdx!==lst[q].i&&cupKey(lst[q].f[iAcu]))corr++;else break;}}
       if(editIdx===i&&ROL==='admin'){
         const docSel=editDoc||f[iAdo];
         html+=`<tr>${primera?`<td class="esp" rowspan="${nfilas}">${esc(c.nom)}</td><td rowspan="${nfilas}">${c.hs}</td>`:''}
@@ -207,9 +216,14 @@ function rConciliador(){
          <td>${cupofSelect(docSel,cargas,f[iAcu])}</td>
          <td><input id="edHs" type="number" min="0.5" step="0.5" value="${unNum(f[iAh])}" style="width:60px"></td>
          <td><button class="b mini" onclick="guardarEdicion(${i},'${c.n}')">✔</button> <button class="b mini sec" onclick="editIdx=null;editDoc='';rConciliador()">✕</button></td></tr>`;
+      } else if(esVac){
+        html+=`<tr>${primera?`<td class="esp" rowspan="${nfilas}">${esc(c.nom)}</td><td rowspan="${nfilas}">${c.hs}</td>`:''}
+         <td class="mini">—</td><td><span class="pill falta">VACANTE</span> <span class="mini">${esc(f[iAo]||'')}</span></td>
+         <td>${esc(f[iAh])}</td>
+         <td>${primera?est:''} ${ROL==='admin'?`<a href="#" onclick="editIdx=${i};editDoc='';addEsp=null;rConciliador();return false" title="editar">✎</a> <a href="#" onclick="quitarAsig(${i});return false" title="quitar">🗑</a>`:''}</td></tr>`;
       } else {
         html+=`<tr>${primera?`<td class="esp" rowspan="${nfilas}">${esc(c.nom)}</td><td rowspan="${nfilas}">${c.hs}</td>`:''}
-         <td>${esc(f[iAdo])}</td><td class="cupofcell">${esc(f[iAcu])}${f[iAo]?` <span class="mini">(${esc(f[iAo])})</span>`:''}</td>
+         ${mismoDocAntes?'':`<td rowspan="${corr}">${esc(f[iAdo])}</td>`}<td class="cupofcell">${esc(f[iAcu])}${f[iAo]?` <span class="mini">(${esc(f[iAo])})</span>`:''}</td>
          <td>${esc(f[iAh])}</td>
          <td>${primera?est:''} ${ROL==='admin'?`<a href="#" onclick="editIdx=${i};editDoc='';addEsp=null;rConciliador();return false" title="editar">✎</a> <a href="#" onclick="quitarAsig(${i});return false" title="quitar">🗑</a>`:''}</td></tr>`;
       }
@@ -229,7 +243,9 @@ function rConciliador(){
     <div><label>Plan destino</label><select id="cPlan">${planes.map(p=>`<option ${p===selPlan?'selected':''}>${p}</option>`).join('')}</select></div>
     <div><label>Curso</label><select id="cCurso">${cursos.map(c=>`<option ${c===selCurso?'selected':''}>${c}</option>`).join('')}</select></div>
     <div><label>División</label><select id="cDiv">${divs.map(d=>`<option ${d===selDiv?'selected':''}>${d}</option>`).join('')}</select></div>
-    <span class="mini">Elegí docente en la fila del espacio: se listan solo sus CUPOF con horas disponibles. No se puede exceder la caja.</span></div></div>
+    ${ROL==='admin'?`<button class="b ${combinadas?'':'sec'}" onclick="repararBase()">🛠 REPARAR BASE${combinadas?` (${combinadas} filas por dividir)`:''}</button>`:''}
+    <span class="mini">Elegí docente en la fila del espacio: se listan solo sus CUPOF con horas disponibles. No se puede exceder la caja.</span></div>
+    ${combinadas?`<div class="problema" style="margin-top:8px">Hay ${combinadas} asignaciones con varias CUPOF juntas sin dividir: los totales pueden verse mal. Tocá <b>REPARAR BASE</b> (divide, marca vacantes y normaliza nombres, directo desde acá — no hace falta Apps Script).</div>`:''}</div>
   <div class="card"><h2>${selPlan} — ${selCurso} ${selDiv}</h2>
   <div class="tabla-wrap"><table><tr><th>ESPACIO</th><th>HS CAJA</th><th>DOCENTE</th><th>CUPOF</th><th>HS ASIG.</th><th>ESTADO</th></tr>${html}</table></div>${huerf}</div>`;
   document.getElementById('cPlan').onchange=e=>{selPlan=e.target.value;addEsp=null;rConciliador();};
@@ -283,6 +299,48 @@ async function guardarAsig(espN,falta){
     'TURNO':selPlan==='BEA-EPJA'?'NOCHE':'','ESPACIO DESTINO':espacio,'HS':hs,'CUPOF (texto origen)':cup,'DOCENTE':addDoc,'OBS.':''}[col]??''));
   try{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));addEsp=null;addDoc='';msg('Asignado');rConciliador();}
   catch(e){msg('Error: '+e.message);}
+}
+async function repararBase(){
+  if(ROL!=='admin')return msg('Solo administración');
+  const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAh=ix('ASIGNACIONES','HS'),iAdo=ix('ASIGNACIONES','DOCENTE'),
+        iAo=ix('ASIGNACIONES','OBS.'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAp=ix('ASIGNACIONES','PLAN DESTINO'),iAc=ix('ASIGNACIONES','CURSO');
+  const tareas=BD['ASIGNACIONES'].filas.map((f,i)=>{
+    const partes=String(f[iAcu]).split(/[\s\/]+(?=0{0,4}\d?53200)/).map(x=>x.replace(/[\s\/]+$/,'').trim()).filter(x=>/53200/.test(x));
+    const plan=PLAN_MAP[f[iAp]]||f[iAp];
+    const m=matchEspacio(f[iAe],cajaDe(plan,f[iAc],true)||[]);
+    return {i,f,partes,canon:m?m.nom:null};
+  });
+  const nDiv=tareas.filter(t=>t.partes.length>1).length;
+  const nVac=tareas.filter(t=>t.partes.length===0&&t.f[iAdo]).length;
+  const nNom=tareas.filter(t=>t.canon&&t.canon!==t.f[iAe]).length;
+  if(!confirm(`Reparación de la base:\n· ${nDiv} filas con varias CUPOF se dividirán\n· ${nVac} vacantes con docente arrastrado se corregirán\n· ${nNom} nombres de espacio se normalizarán\nPuede tardar unos minutos. ¿Continuar?`))return;
+  let hechos=0;
+  for(const t of tareas){
+    try{
+      const f=t.f.slice(); let cambio=false;
+      if(t.canon&&t.canon!==f[iAe]){f[iAe]=t.canon;cambio=true;}
+      if(t.partes.length===0&&f[iAdo]){f[iAdo]='';f[iAo]=((f[iAo]||'')+' VACANTE').trim();cambio=true;}
+      if(t.partes.length>1){
+        const hsTok=String(t.f[iAh]).match(/\d+(?:[.,]\d+)?/g)||[]; let tk=0;
+        const hsDe=p=>{const mp=p.match(/\(\s*(\d+[.,]?\d*)\s*h/i);return mp?mp[1]:(hsTok[tk++]??'');};
+        f[iAcu]=t.partes[0]; f[iAh]=hsDe(t.partes[0]);
+        await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:t.i+1,valores:f});
+        BD['ASIGNACIONES'].filas[t.i]=f.map(x=>String(x??''));
+        for(let p=1;p<t.partes.length;p++){
+          const nf=t.f.slice(); nf[iAcu]=t.partes[p]; nf[iAh]=hsDe(t.partes[p]);
+          nf[iAo]=((t.f[iAo]||'')+' (división)').trim(); if(t.canon)nf[iAe]=t.canon;
+          await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:nf});
+          BD['ASIGNACIONES'].filas.push(nf.map(x=>String(x??'')));
+        }
+      } else if(cambio){
+        await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:t.i+1,valores:f});
+        BD['ASIGNACIONES'].filas[t.i]=f.map(x=>String(x??''));
+      }
+    }catch(e){msg('Error en fila '+(t.i+2)+': '+e.message,6000);}
+    hechos++; if(hechos%15===0)msg(`Reparando… ${hechos}/${tareas.length}`,3000);
+  }
+  msg('Reparación completa. Recargando…',5000);
+  const j=await apiGet({action:'bd',token:TOKEN}); BD=j.bd; render();
 }
 async function quitarAsig(i){
   if(!confirm('¿Quitar esta asignación?'))return;
@@ -380,9 +438,9 @@ function rValidador(){
       const divs=(DIVS[plan]&&DIVS[plan][curso])||['I'];
       divs.forEach(div=>{
         const caja=cajaDe(plan,curso);const asigs=asigsDe(plan,curso,div);
-        const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS');
+        const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAcu2=ix('ASIGNACIONES','CUPOF (texto origen)');
         const suma={};caja.forEach(c=>suma[c.n]=0);
-        asigs.forEach(({f})=>{const m=matchEspacio(f[iAe],caja);if(m)suma[m.n]+=unNum(f[iAh]);});
+        asigs.forEach(({f})=>{if(!cupKey(f[iAcu2]))return;const m=matchEspacio(f[iAe],caja);if(m)suma[m.n]+=unNum(f[iAh]);});
         caja.forEach(c=>{ if(suma[c.n]<c.hs)add('leve',`${plan} ${curso} ${div}: "${c.nom}" ${suma[c.n]}/${c.hs} hs`);
           if(suma[c.n]>c.hs)add('grave',`${plan} ${curso} ${div}: "${c.nom}" EXCEDE (${suma[c.n]}/${c.hs})`);});
       });
