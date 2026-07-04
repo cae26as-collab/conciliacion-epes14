@@ -692,7 +692,7 @@ function rValidador(){
     }</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguno ✔</p>'}`}
   </div>
   <div class="card"><h3>Posibles CUPOF duplicadas por variante de ortografía del espacio</h3>
-   <p class="mini">Misma estructura (tipo · curso · división · turno · plan · carga) pero el nombre del espacio está escrito distinto en más de una fila de la hoja CUPOF. Puede ser la misma CUPOF cargada dos veces con otra redacción (unificar a mano en Datos) o dos espacios genuinamente distintos que coinciden en esos datos (no hacer nada).</p>
+   <p class="mini">Misma estructura (tipo · curso · división · turno · plan · carga) , pero el nombre del espacio está escrito distinto en más de una fila de la hoja CUPOF. Puede ser la misma CUPOF cargada dos veces con otra redacción (unificar a mano en Datos) o dos espacios genuinamente distintos que coinciden en esos datos (no hacer nada).</p>
    ${variantesCupof.length?`<div class="tabla-wrap"><table><tr><th>ESTRUCTURA (tipo·curso·div·turno·plan·carga)</th><th>CUPOF</th><th>ESPACIO tal como está escrito</th></tr>
     ${variantesCupof.map(g=>g.items.map((it,idx)=>`<tr>${idx===0?`<td rowspan="${g.items.length}" class="mini">${esc(g.key.replace(/\|/g,' · '))}</td>`:''}<td class="cupofcell">${esc(it.cup)}</td><td>${esc(it.espacio)}</td></tr>`).join('')).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>`;
