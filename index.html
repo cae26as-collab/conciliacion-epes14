@@ -50,6 +50,7 @@ h2 { font-size:16px; color:var(--azul); margin-bottom:10px; } h3 { font-size:14p
 <nav id="nav" style="display:none">
   <button data-t="conciliador" class="act">Conciliador</button>
   <button data-t="datos">Datos</button>
+  <button data-t="designaciones">Designaciones</button>
   <button data-t="validador">Validador</button>
   <button data-t="reportes">Reportes</button>
   <button data-t="generar">Generar</button>
@@ -66,6 +67,7 @@ h2 { font-size:16px; color:var(--azul); margin-bottom:10px; } h3 { font-size:14p
   <div id="app" style="display:none">
     <section id="v-conciliador"></section>
     <section id="v-datos" style="display:none"></section>
+    <section id="v-designaciones" style="display:none"></section>
     <section id="v-validador" style="display:none"></section>
     <section id="v-reportes" style="display:none"></section>
     <section id="v-generar" style="display:none"></section>
@@ -276,7 +278,7 @@ document.getElementById('nav').addEventListener('click',e=>{
   render(e.target.dataset.t);
 });
 function render(tab){tab=tab||document.querySelector('nav button.act').dataset.t;
-  ({conciliador:rConciliador,datos:rDatos,validador:rValidador,reportes:rReportes,generar:rGenerar,auditoria:rAuditoria})[tab]();}
+  ({conciliador:rConciliador,datos:rDatos,designaciones:rDesignaciones,validador:rValidador,reportes:rReportes,generar:rGenerar,auditoria:rAuditoria})[tab]();}
 
 /* ============ CONCILIADOR (edición en línea) ============ */
 let selPlan='CBS-672', selCurso='1°', selDiv='I', addEsp=null, addDoc='', editIdx=null, editDoc='';
@@ -649,9 +651,29 @@ async function editHs(i){
 
 /* ============ DATOS ============ */
 let entSel='DOCENTES', filtro='', fInstr='', fCurso='', fPlan='';
+/** Índice (dentro de filas(entSel)) de la fila que se está editando en línea en la propia tabla de
+ *  Datos, o null si ninguna. Reemplaza el viejo formulario en ventana flotante: al tocar "editar" la
+ *  fila se convierte en inputs en el lugar, con botones Guardar/Cancelar (pedido del usuario 05/07/2026,
+ *  para no perder de vista el resto de la tabla mientras se corrige un dato). No se usa para el alta
+ *  ("+ Agregar" sigue abriendo el modal formFila, no hay fila existente sobre la cual editar en línea) ni
+ *  para los enlaces "corregir" del Validador (esos siguen usando editarFila/formFila porque se dispara
+ *  desde OTRA pestaña, donde no tendría sentido una edición en línea invisible). */
+let datosEditIdx=null;
+/** Ancho de columna especial para algunas tablas: hoy solo CUPOF, donde el propio texto de la CUPOF
+ *  necesita más lugar del que le da el reparto automático (se partía en varias líneas) y ESTADO/FUENTE
+ *  INSTR. pueden achicarse para compensar (pedido del usuario 05/07/2026). Devuelve null si no aplica —
+ *  en ese caso la columna no lleva ancho fijo (reparto automático de siempre). */
+function anchoColDatos(ent,cs,j){
+  if(ent==='CUPOF'){
+    const anchos={'CUPOF':'22%','ESTADO':'6%','FUENTE INSTR.':'8%'};
+    return anchos[cs[j]]||null;
+  }
+  return null;
+}
 function rDatos(){
   const v=document.getElementById('v-datos');
   const ents=Object.keys(BD).filter(e=>e!=='AUDITORIA');
+  if(entSel==='CARGOS')return rDatosCargos();
   const cs=cols(entSel);
   let fls=filas(entSel).map((f,i)=>({f,i}));
   if(entSel==='CUPOF'){
@@ -681,19 +703,112 @@ function rDatos(){
        return desigs.map((d,idx)=>`<tr>${idx===0?`<td rowspan="${desigs.length}" class="cupofcell">${esc(f[0])}</td>`:''}<td>${esc(d[iDdo])}</td><td>${esc(d[iDsit])}</td></tr>`).join('');
      }).join('')}</table></div>`;
   }
-  v.innerHTML=`<div class="card"><div class="fila">
-    <div><label>Entidad</label><select id="dEnt">${ents.map(e=>`<option ${e===entSel?'selected':''}>${e}</option>`).join('')}</select></div>
+  const colgroup=`<colgroup>${cs.map((c,j)=>{const a=anchoColDatos(entSel,cs,j);return a?`<col style="width:${a}">`:'<col>';}).join('')}${ROL==='admin'?'<col style="width:70px">':''}</colgroup>`;
+  v.innerHTML=`<div class="card">
+   <div class="fila" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">${ents.map(e=>`<span class="subtab ${e===entSel?'act':''}" onclick="entSel='${e}';filtro=fInstr=fCurso=fPlan='';datosEditIdx=null;rDatos()">${e}</span>`).join('')}</div>
+   <div class="fila">
     <div><label>Buscar</label><input id="dBusca" value="${esc(filtro)}"></div>${filtrosCupof}
     ${ROL==='admin'?`<button class="b" onclick="formFila(entSel,cols(entSel).map(()=>''),null)">+ Agregar</button>`:''}
     <button class="b sec" onclick="exportCSV(entSel)">CSV</button><span class="mini">${fls.length} filas</span></div></div>
-  <div class="tabla-wrap"><table><tr>${cs.map(c=>`<th>${esc(c)}</th>`).join('')}${ROL==='admin'?'<th></th>':''}</tr>
-  ${fls.slice(0,900).map(({f,i})=>`<tr>${f.map(c=>`<td>${esc(String(c??'')).slice(0,140)}</td>`).join('')}
-   ${ROL==='admin'?`<td style="white-space:nowrap"><a href="#" onclick="editarFila('${entSel}',${i});return false">✎</a> <a href="#" onclick="accion(this,()=>borrarFila('${entSel}',${i}));return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>${docsCupofHTML}`;
-  document.getElementById('dEnt').onchange=e=>{entSel=e.target.value;filtro=fInstr=fCurso=fPlan='';rDatos();};
-  document.getElementById('dBusca').oninput=e=>{filtro=e.target.value;rDatos();};
+  <div class="tabla-wrap"><table style="${entSel==='CUPOF'?'table-layout:fixed':''}">${entSel==='CUPOF'?colgroup:''}<tr>${cs.map((c,j)=>`<th>${esc(c)}</th>`).join('')}${ROL==='admin'?'<th></th>':''}</tr>
+  ${fls.slice(0,900).map(({f,i})=>{
+    if(i===datosEditIdx){
+      return `<tr>${cs.map((c,j)=>`<td><input id="de-${j}" value="${esc(f[j]??'')}" style="width:100%"></td>`).join('')}
+       <td style="white-space:nowrap"><a href="#" onclick="accion(this,()=>guardarEdicionInline('${entSel}',${i}));return false">💾</a> <a href="#" onclick="datosEditIdx=null;rDatos();return false">✕</a></td></tr>`;
+    }
+    return `<tr>${f.map(c=>`<td>${esc(String(c??'')).slice(0,140)}</td>`).join('')}
+     ${ROL==='admin'?`<td style="white-space:nowrap"><a href="#" onclick="datosEditIdx=${i};rDatos();return false">✎</a> <a href="#" onclick="accion(this,()=>borrarFila('${entSel}',${i}));return false">🗑</a></td>`:''}</tr>`;
+  }).join('')}</table></div>${docsCupofHTML}`;
+  document.getElementById('dBusca').oninput=e=>{filtro=e.target.value;datosEditIdx=null;rDatos();};
   if(entSel==='CUPOF'){document.getElementById('fI').onchange=e=>{fInstr=e.target.value;rDatos();};
     document.getElementById('fC').onchange=e=>{fCurso=e.target.value;rDatos();};
     document.getElementById('fP').onchange=e=>{fPlan=e.target.value;rDatos();};}
+}
+/** Guarda la edición en línea de una fila del listado genérico de Datos (ver datosEditIdx arriba). */
+async function guardarEdicionInline(ent,i){
+  const cs=cols(ent);
+  const nuevos=cs.map((_,j)=>document.getElementById('de-'+j).value);
+  try{ await apiPost({action:'editar',entidad:ent,fila:i+1,valores:nuevos}); BD[ent].filas[i]=nuevos; datosEditIdx=null; msg('Guardado'); render(); }
+  catch(e){msg('Error: '+e.message);}
+}
+
+/** Vista especial de Datos > CARGOS (pedido del usuario 05/07/2026): muestra la CUPOF real de cada
+ *  cargo (columna nueva, agregada por agregarColumnaCupofCargos() en Code.gs — si todavía no corrió esa
+ *  función se avisa arriba y la columna se ve vacía, sin romper nada) y saca la columna SUPLENTE de la
+ *  tabla: cuando un cargo tiene suplente, se lista como una fila más debajo del titular/interino (misma
+ *  CARGO/PREFIJO/N°/CUPOF vía rowspan), en vez de una columna aparte. Edición en línea igual que el resto
+ *  de Datos, pero como fila-formulario (con labels) porque el CUPOF se elige de una lista y hay un campo
+ *  (Suplente) que no tiene columna propia en la vista de lectura. */
+function rDatosCargos(){
+  const v=document.getElementById('v-datos');
+  const ents=Object.keys(BD).filter(e=>e!=='AUDITORIA');
+  const cCarg=ix('CARGOS','CARGO'),cPref=ix('CARGOS','PREFIJO'),cN=ix('CARGOS','N°'),cCup=ix('CARGOS','CUPOF'),
+        cInst=ix('CARGOS','INSTRUMENTO'),cFec=ix('CARGOS','FECHA CREACIÓN'),cOcu=ix('CARGOS','OCUPANTE 2026'),
+        cSit=ix('CARGOS','SIT. REVISTA'),cSup=ix('CARGOS','SUPLENTE'),cObs=ix('CARGOS','OBSERVACIONES');
+  let fls=filas('CARGOS').map((f,i)=>({f,i}));
+  if(filtro)fls=fls.filter(({f})=>f.join(' ').toLowerCase().includes(filtro.toLowerCase()));
+  const cupofCargoOpts=filas('CUPOF').filter(f=>f[ix('CUPOF','CLASE')]==='Cargo');
+  const avisoSinCupof=cCup===-1?`<p class="problema leve">Todavía no existe la columna CUPOF en la hoja CARGOS: correr <b>agregarColumnaCupofCargos()</b> una vez desde Apps Script para habilitarla (sugiere el vínculo automáticamente cuando no hay ambigüedad; lo demás se completa a mano acá mismo, editando cada fila).</p>`:'';
+  const filaEdit=(f,i)=>`<tr><td colspan="10" style="background:#f8fafc">
+    <div class="fila">
+     <div><label>Cargo</label><input id="ce-carg" value="${esc(f[cCarg]??'')}" style="width:220px"></div>
+     <div><label>Prefijo</label><input id="ce-pref" value="${esc(f[cPref]??'')}" style="width:80px"></div>
+     <div><label>N°</label><input id="ce-n" value="${esc(f[cN]??'')}" style="width:60px"></div>
+     <div><label>CUPOF</label>${cCup>-1?`<select id="ce-cup" class="cupofcell" style="min-width:260px"><option value="">— sin vincular —</option>${cupofCargoOpts.map(c=>`<option value="${esc(c[0])}" ${c[0]===f[cCup]?'selected':''}>${esc(c[0])}</option>`).join('')}</select>`:'<span class="mini">(falta la columna)</span>'}</div>
+    </div>
+    <div class="fila" style="margin-top:6px">
+     <div><label>Instrumento</label><input id="ce-inst" value="${esc(f[cInst]??'')}" style="width:150px"></div>
+     <div><label>Fecha creación</label><input id="ce-fec" value="${esc(f[cFec]??'')}" style="width:110px"></div>
+     <div><label>Ocupante 2026 (titular/interino)</label><input id="ce-ocu" value="${esc(f[cOcu]??'')}" style="width:220px"></div>
+     <div><label>Sit. revista</label><select id="ce-sit"><option value=""></option>${['TITULAR','INTERINO'].map(s=>`<option ${f[cSit]===s?'selected':''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <div class="fila" style="margin-top:6px">
+     <div><label>Suplente</label><input id="ce-sup" value="${esc(f[cSup]??'')}" style="width:220px"></div>
+     <div style="flex:1"><label>Observaciones</label><input id="ce-obs" value="${esc(f[cObs]??'')}" style="width:100%"></div>
+    </div>
+    <div class="fila" style="margin-top:8px">
+     <button class="b" onclick="accion(this,()=>guardarEdicionCargos(${i}))">💾 Guardar</button>
+     <button class="b sec" onclick="datosEditIdx=null;rDatos()">✕ Cancelar</button>
+    </div>
+   </td></tr>`;
+  const filaLectura=(f,i)=>{
+    const tieneSup=!!(f[cSup]&&String(f[cSup]).trim());
+    const rs=tieneSup?2:1;
+    const acciones=ROL==='admin'?`<td rowspan="${rs}" style="white-space:nowrap"><a href="#" onclick="datosEditIdx=${i};rDatos();return false">✎</a> <a href="#" onclick="accion(this,()=>borrarFila('CARGOS',${i}));return false">🗑</a></td>`:'';
+    let html=`<tr>
+     <td rowspan="${rs}">${esc(f[cCarg])}</td><td rowspan="${rs}">${esc(f[cPref])}</td><td rowspan="${rs}">${esc(f[cN])}</td>
+     <td rowspan="${rs}" class="cupofcell">${esc(f[cCup]||'')}</td><td rowspan="${rs}">${esc(f[cInst])}</td><td rowspan="${rs}">${esc(f[cFec])}</td>
+     <td>${esc(f[cOcu])}</td><td>${esc(f[cSit]||'')}</td><td rowspan="${rs}">${esc(f[cObs]||'')}</td>${acciones}</tr>`;
+    if(tieneSup) html+=`<tr><td>${esc(f[cSup])}</td><td>SUPLENTE</td></tr>`;
+    return html;
+  };
+  v.innerHTML=`<div class="card">
+   <div class="fila" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">${ents.map(e=>`<span class="subtab ${e===entSel?'act':''}" onclick="entSel='${e}';filtro=fInstr=fCurso=fPlan='';datosEditIdx=null;rDatos()">${e}</span>`).join('')}</div>
+   ${avisoSinCupof}
+   <div class="fila">
+    <div><label>Buscar</label><input id="dBusca" value="${esc(filtro)}"></div>
+    ${ROL==='admin'?`<button class="b" onclick="formFila('CARGOS',cols('CARGOS').map(()=>''),null)">+ Agregar</button>`:''}
+    <button class="b sec" onclick="exportCSV('CARGOS')">CSV</button><span class="mini">${fls.length} filas</span></div></div>
+  <div class="tabla-wrap"><table><tr><th>CARGO</th><th>PREFIJO</th><th>N°</th><th>CUPOF</th><th>INSTRUMENTO</th><th>FECHA CREACIÓN</th><th>OCUPANTE 2026</th><th>SIT. REVISTA</th><th>OBSERVACIONES</th>${ROL==='admin'?'<th></th>':''}</tr>
+  ${fls.map(({f,i})=>i===datosEditIdx?filaEdit(f,i):filaLectura(f,i)).join('')}</table></div></div>`;
+  document.getElementById('dBusca').oninput=e=>{filtro=e.target.value;datosEditIdx=null;rDatos();};
+}
+/** Guarda la edición en línea de una fila de CARGOS (ver rDatosCargos arriba). */
+async function guardarEdicionCargos(i){
+  const f=filas('CARGOS')[i].slice();
+  const set=(col,val)=>{const idx=ix('CARGOS',col); if(idx>-1)f[idx]=val;};
+  set('CARGO',document.getElementById('ce-carg').value);
+  set('PREFIJO',document.getElementById('ce-pref').value);
+  set('N°',document.getElementById('ce-n').value);
+  if(ix('CARGOS','CUPOF')>-1) set('CUPOF',document.getElementById('ce-cup').value);
+  set('INSTRUMENTO',document.getElementById('ce-inst').value);
+  set('FECHA CREACIÓN',document.getElementById('ce-fec').value);
+  set('OCUPANTE 2026',document.getElementById('ce-ocu').value);
+  set('SIT. REVISTA',document.getElementById('ce-sit').value);
+  set('SUPLENTE',document.getElementById('ce-sup').value);
+  set('OBSERVACIONES',document.getElementById('ce-obs').value);
+  try{ await apiPost({action:'editar',entidad:'CARGOS',fila:i+1,valores:f}); BD['CARGOS'].filas[i]=f; datosEditIdx=null; msg('Guardado'); render(); }
+  catch(e){msg('Error: '+e.message);}
 }
 function editarFila(ent,i){formFila(ent,BD[ent].filas[i].slice(),i);}
 async function borrarFila(ent,i){
@@ -719,6 +834,283 @@ function exportCSV(ent){
   const rows=[cols(ent),...filas(ent)];
   const csv=rows.map(r=>r.map(c=>`"${String(c??'').replace(/"/g,'""')}"`).join(';')).join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'}));a.download=ent+'.csv';a.click();
+}
+
+/* ============ ABM DE DESIGNACIONES (docente ↔ CUPOF) ============
+ * Pantalla dedicada para dar de alta/baja/modificar la relación DESIGNACIONES (quién tiene cada CUPOF
+ * y en qué situación de revista), con dos reglas centrales pedidas por el usuario (05/07/2026):
+ *  1) Las CUPOF individuales (PHC sueltas, o de grupo sin Tiempo asignado todavía) se asocian una por una.
+ *  2) Los Tiempos (varias CUPOF agrupadas bajo un mismo SUFIJO TIEMPO, típicamente HCG y algunas HEXT/
+ *     HREU/INFO/MEDI) NO se pueden separar para designar: si la CUPOF elegida pertenece a un Tiempo, la
+ *     designación se aplica a TODO el grupo a la vez, y además se sincroniza la hoja TIEMPOS (que tiene
+ *     sus propios campos DOCENTE/DNI y SUPLENTE/DNI SUPLENTE, redundantes con DESIGNACIONES por CUPOF).
+ * Todo pasa por los mismos endpoints genéricos crear/editar/borrar de apiPost — sin cambios en Code.gs. */
+let designDoc='', designCup=null, designSit='INTERINO', designBusca='';
+
+/** Dado el texto de una CUPOF, arma la info de su "grupo de Tiempo" si corresponde: todas las CUPOF que
+ *  comparten el mismo SUFIJO TIEMPO (no vacío), más la fila de TIEMPOS de ese sufijo si ya existe. Si la
+ *  CUPOF no tiene SUFIJO TIEMPO cargado, devuelve esGrupo:false (se trata como CUPOF individual). */
+function grupoDeCupof(cupofTexto){
+  const iSuf=ix('CUPOF','SUFIJO TIEMPO');
+  const fila=filas('CUPOF').find(f=>cupKey(f[0])===cupKey(cupofTexto));
+  const sufijo=fila?String(fila[iSuf]||'').trim():'';
+  if(!sufijo)return {esGrupo:false};
+  const miembros=filas('CUPOF').map((f,i)=>({f,i})).filter(({f})=>String(f[iSuf]||'').trim()===sufijo);
+  const iTsuf=ix('TIEMPOS','SUFIJO');
+  const ti=filas('TIEMPOS').findIndex(t=>String(t[iTsuf]||'').trim()===sufijo);
+  return {esGrupo:true, sufijo, miembros, tiempoIdx:ti>-1?ti:null, tiempoFila:ti>-1?filas('TIEMPOS')[ti]:null};
+}
+/** Arma el texto de una CUPOF nueva a partir de sus partes, siguiendo la convención ya usada en toda la
+ *  base: 0053200-TIPO-ESPACIO-CURSO-DIV-TURNO-PLAN-CARGA, sin espacios internos. Si es de clase "Cargo"
+ *  la carga final es la letra "C". Si se está uniendo a un Tiempo existente (sufijo), la carga se escribe
+ *  como GH{n}{sufijo} (p.ej. GH3/169); si no, va el número de horas tal cual (o, si el TIPO es de los que
+ *  suelen usar la notación GH aunque sea una CUPOF suelta, se puede tipear igual en el campo de carga). */
+function buildCupofTexto(p){
+  const up=x=>String(x||'').toUpperCase().trim().replace(/\s+/g,'');
+  const tipo=up(p.tipo), espacio=up(p.espacio), curso=up(p.curso), div=up(p.div), turno=up(p.turno), plan=up(p.plan);
+  let cargaSeg;
+  if(p.clase==='Cargo') cargaSeg='C';
+  else if(p.esGrupo && p.sufijo){ const suf=up(p.sufijo); cargaSeg='GH'+up(p.carga)+(suf.startsWith('/')?suf:'/'+suf); }
+  else cargaSeg=up(p.carga);
+  return ['0053200',tipo,espacio,curso,div,turno,plan,cargaSeg].filter(x=>x!=='').join('-');
+}
+function rDesignaciones(){
+  const v=document.getElementById('v-designaciones');
+  const iCuTipo=ix('CUPOF','TIPO'),iCuEsp=ix('CUPOF','ESPACIO'),iCuCurso=ix('CUPOF','CURSO'),iCuPlan=ix('CUPOF','PLAN'),
+        iCuCarga=ix('CUPOF','CARGA'),iCuSuf=ix('CUPOF','SUFIJO TIEMPO'),iCuInst=ix('CUPOF','INSTRUMENTO'),
+        iCuFecha=ix('CUPOF','FECHA'),iCuEstado=ix('CUPOF','ESTADO');
+  const docentes=[...filas('DOCENTES')].sort((a,b)=>String(a[1]).localeCompare(String(b[1])));
+  // resultados de búsqueda de CUPOF (por texto, tipo, espacio, curso, plan)
+  const b=designBusca.trim().toLowerCase();
+  let candidatas=filas('CUPOF');
+  if(b) candidatas=candidatas.filter(f=>f.join(' ').toLowerCase().includes(b));
+  candidatas=candidatas.slice(0,60);
+  const grupo=designCup?grupoDeCupof(designCup):null;
+  v.innerHTML=`<div class="card"><h2>Designaciones — alta / baja / modificación</h2>
+   <p class="mini">Administrá qué docente tiene designada cada CUPOF y en qué situación de revista. Las CUPOF individuales se asocian una por una; si la CUPOF elegida pertenece a un Tiempo (grupo bajo un mismo SUFIJO), la designación se aplica a todo el grupo junto y se sincroniza con la hoja TIEMPOS.</p>
+   <div class="fila">
+    <div><label>Docente</label><select id="dsDoc" style="min-width:260px">
+      <option value="">— elegir —</option>
+      ${docentes.map(d=>`<option value="${esc(d[1])}" ${d[1]===designDoc?'selected':''}>${esc(d[1])} (DNI ${esc(d[0])})</option>`).join('')}
+    </select></div>
+    <div><label>Situación de revista</label><select id="dsSit">
+      ${['TITULAR','INTERINO','SUPLENTE'].map(s=>`<option ${s===designSit?'selected':''}>${s}</option>`).join('')}
+    </select></div>
+   </div>
+   <div style="margin-top:12px"><label>Buscar CUPOF ya registrada (texto, tipo, espacio, curso, plan)</label>
+    <input id="dsBusca" style="width:100%" value="${esc(designBusca)}" placeholder="Ej.: EDUCFISI, PHC, 4°II, BCS...">
+   </div>
+   <div class="tabla-wrap" style="max-height:220px;margin-top:8px"><table><tr><th>CUPOF</th><th>TIPO</th><th>ESPACIO</th><th>CURSO/DIV/TURNO</th><th>PLAN</th><th>CARGA</th><th></th></tr>
+    ${candidatas.map(f=>`<tr${cupKey(f[0])===cupKey(designCup||'')?' style="background:#eaf2fb"':''}><td class="cupofcell">${esc(f[0])}</td><td>${esc(f[iCuTipo])}</td><td>${esc(f[iCuEsp])}</td><td>${esc(f[iCuCurso])}° ${esc(f[ix('CUPOF','DIV.')])} ${esc(f[ix('CUPOF','TURNO')])}</td><td>${esc(f[iCuPlan])}</td><td>${esc(f[iCuCarga])}${f[iCuSuf]?' ('+esc(f[iCuSuf])+')':''}</td>
+     <td><a href="#" onclick="designCup='${esc(f[0]).replace(/'/g,"&#39;")}';rDesignaciones();return false">elegir</a></td></tr>`).join('')}
+    ${!candidatas.length?'<tr><td colspan="7" class="mini">Sin resultados — probá otro texto o creá la CUPOF nueva abajo.</td></tr>':''}
+   </table></div>
+   <div class="fila" style="margin-top:8px"><button class="b sec mini" onclick="formCupofNueva()">+ Crear CUPOF nueva</button>
+    ${designCup?`<button class="b sec mini" onclick="designCup=null;rDesignaciones()">Quitar selección</button>`:''}</div>
+   ${designCup?`<div class="card" style="margin-top:10px;background:#f8fafc">
+     <p><b>CUPOF elegida:</b> <span class="cupofcell">${esc(designCup)}</span></p>
+     ${grupo.esGrupo?`<p class="problema leve">Esta CUPOF pertenece a un <b>Tiempo</b> (SUFIJO ${esc(grupo.sufijo)}) junto con otras ${grupo.miembros.length-1} CUPOF más. Al guardar, la designación se va a aplicar a las ${grupo.miembros.length} CUPOF del grupo, no solo a esta.
+       ${grupo.tiempoFila?`<br>TIEMPOS ya tiene cargado: DOCENTE=${esc(grupo.tiempoFila[ix('TIEMPOS','DOCENTE')]||'(vacío)')} · SUPLENTE=${esc(grupo.tiempoFila[ix('TIEMPOS','SUPLENTE')]||'(vacío)')}.`:'<br>Todavía no existe una fila en TIEMPOS para este SUFIJO — se puede crear al guardar.'}
+       <div class="tabla-wrap" style="max-height:140px;margin-top:6px"><table><tr><th>CUPOF del grupo</th><th>CARGA</th></tr>
+       ${grupo.miembros.map(({f})=>`<tr><td class="cupofcell">${esc(f[0])}</td><td>${esc(f[iCuCarga])}</td></tr>`).join('')}</table></div>
+      </p>`:'<p class="mini">CUPOF individual (no pertenece a ningún Tiempo) — se asocia sola.</p>'}
+     <button class="b" onclick="accion(this,guardarDesignacion)">Guardar designación</button>
+   </div>`:''}
+  </div>
+  <div class="card"><h3>Designaciones actuales de ${designDoc?esc(designDoc):'(elegí un docente arriba para filtrar, o mirá todas)'}</h3>
+   ${renderTablaDesignaciones()}
+  </div>`;
+  document.getElementById('dsDoc').onchange=e=>{designDoc=e.target.value;rDesignaciones();};
+  document.getElementById('dsSit').onchange=e=>{designSit=e.target.value;};
+  document.getElementById('dsBusca').oninput=e=>{designBusca=e.target.value;rDesignaciones();};
+}
+function renderTablaDesignaciones(){
+  const iDdni=0,iDdoc=1,iDcup=2,iDsit=3;
+  let filasD=filas('DESIGNACIONES').map((f,i)=>({f,i}));
+  if(designDoc) filasD=filasD.filter(({f})=>f[iDdoc]===designDoc);
+  filasD.sort((a,b)=>String(a.f[iDdoc]).localeCompare(String(b.f[iDdoc]))||String(a.f[iDcup]).localeCompare(String(b.f[iDcup])));
+  return `<div class="tabla-wrap"><table><tr><th>DOCENTE</th><th>DNI</th><th>CUPOF</th><th>SITUACIÓN</th><th></th></tr>
+   ${filasD.slice(0,400).map(({f,i})=>`<tr><td>${esc(f[iDdoc])}</td><td>${esc(f[iDdni])}</td><td class="cupofcell">${esc(f[iDcup])}</td><td>${esc(f[iDsit])}</td>
+    <td style="white-space:nowrap"><a href="#" onclick="cargarParaEditar(${i});return false">editar</a> ${ROL==='admin'?`<a href="#" onclick="accion(this,()=>bajaDesignacion(${i}));return false">🗑 baja</a>`:''}</td></tr>`).join('')}
+   ${!filasD.length?'<tr><td colspan="5" class="mini">Sin designaciones para este filtro.</td></tr>':''}</table></div>`;
+}
+function cargarParaEditar(i){
+  const f=filas('DESIGNACIONES')[i];
+  designDoc=f[1]; designCup=f[2]; designSit=(f[3]||'INTERINO').toUpperCase();
+  rDesignaciones();
+  window.scrollTo(0,0);
+}
+/** Guarda la designación elegida (docente + CUPOF + situación). Si la CUPOF es individual, crea/actualiza
+ *  una sola fila de DESIGNACIONES. Si pertenece a un Tiempo, aplica lo mismo a TODAS las CUPOF del grupo
+ *  y además sincroniza la hoja TIEMPOS (DOCENTE/DNI si la situación es TITULAR/INTERINO, o SUPLENTE/DNI
+ *  SUPLENTE si es SUPLENTE) — nunca deja el grupo con una CUPOF designada distinto de las demás. Si ya
+ *  existe una designación con la misma situación para OTRO docente en alguna de las CUPOF involucradas,
+ *  pide confirmación explícita antes de reemplazarla (no se pisa nada en silencio). */
+async function guardarDesignacion(){
+  const doc=document.getElementById('dsDoc')?.value||designDoc;
+  const sit=document.getElementById('dsSit')?.value||designSit;
+  if(!doc)return msg('Elegí un docente');
+  if(!designCup)return msg('Elegí (o creá) una CUPOF');
+  const docRow=filas('DOCENTES').find(f=>f[1]===doc);
+  if(!docRow)return msg('No se encontró el docente en DOCENTES');
+  const dni=docRow[0];
+  const grupo=grupoDeCupof(designCup);
+  const cupofsAAplicar=grupo.esGrupo?grupo.miembros.map(({f})=>f[0]):[designCup];
+  // detectar conflictos: otra persona ya designada con la MISMA situación en alguna de estas CUPOF
+  const conflictos=[];
+  cupofsAAplicar.forEach(cupTxt=>{
+    const k=cupKey(cupTxt);
+    filas('DESIGNACIONES').forEach((f,i)=>{
+      if(cupKey(f[2])===k && (f[3]||'').toUpperCase()===sit && String(f[0])!==String(dni)){
+        conflictos.push({i,f,cupTxt});
+      }
+    });
+  });
+  if(conflictos.length){
+    const nombres=[...new Set(conflictos.map(c=>c.f[1]))].join(', ');
+    if(!confirm(`Ya figura(n) ${nombres} como ${sit} en ${conflictos.length} de las CUPOF involucradas. ¿Reemplazar esa/s designación/es por ${doc}?`))return;
+  }
+  // borrar conflictos (de atrás para adelante para no correr índices) y crear la/s designación/es nueva/s,
+  // evitando duplicar si el docente ya tenía exactamente esa designación
+  const aBorrar=conflictos.map(c=>c.i).sort((a,b)=>b-a);
+  for(const i of aBorrar){ await apiPost({action:'borrar',entidad:'DESIGNACIONES',fila:i+1}); BD['DESIGNACIONES'].filas.splice(i,1); }
+  for(const cupTxt of cupofsAAplicar){
+    const k=cupKey(cupTxt);
+    const yaExiste=filas('DESIGNACIONES').some(f=>cupKey(f[2])===k && String(f[0])===String(dni) && (f[3]||'').toUpperCase()===sit);
+    if(yaExiste)continue;
+    const nuevaFila=[dni, doc, cupTxt, sit, '', '', 'ABM Designaciones '+new Date().toLocaleDateString('es-AR')];
+    const r=await apiPost({action:'crear',entidad:'DESIGNACIONES',valores:nuevaFila});
+    BD['DESIGNACIONES'].filas.push(nuevaFila);
+  }
+  // sincronizar TIEMPOS si corresponde
+  if(grupo.esGrupo){
+    const campoDoc = sit==='SUPLENTE'?'SUPLENTE':'DOCENTE';
+    const campoDni = sit==='SUPLENTE'?'DNI SUPLENTE':'DNI';
+    const iCd=ix('TIEMPOS',campoDoc), iCdni=ix('TIEMPOS',campoDni);
+    if(grupo.tiempoIdx!=null){
+      const tf=filas('TIEMPOS')[grupo.tiempoIdx].slice();
+      tf[iCd]=doc; tf[iCdni]=dni;
+      await apiPost({action:'editar',entidad:'TIEMPOS',fila:grupo.tiempoIdx+1,valores:tf});
+      BD['TIEMPOS'].filas[grupo.tiempoIdx]=tf;
+    } else {
+      msg('Aviso: este Tiempo (SUFIJO '+grupo.sufijo+') todavía no tiene fila en TIEMPOS — completala a mano en Datos si corresponde.',7000);
+    }
+  }
+  msg('Designación guardada'+(grupo.esGrupo?' para las '+cupofsAAplicar.length+' CUPOF del grupo':''));
+  designCup=null; render();
+}
+/** Da de baja una designación puntual. Si la CUPOF pertenece a un Tiempo, pregunta si se da de baja
+ *  solo esa fila o el grupo completo (mismo docente+situación en todas las CUPOF del Tiempo) — y en ese
+ *  caso también limpia el campo correspondiente de TIEMPOS. */
+async function bajaDesignacion(i){
+  const f=filas('DESIGNACIONES')[i];
+  const grupo=grupoDeCupof(f[2]);
+  let indices=[i];
+  if(grupo.esGrupo){
+    const enGrupo=confirm(`Esta CUPOF pertenece a un Tiempo (SUFIJO ${grupo.sufijo}). ¿Dar de baja la designación de ${f[1]} en las ${grupo.miembros.length} CUPOF del grupo? (Cancelar = solo esta fila puntual)`);
+    if(enGrupo){
+      const dniObj=String(f[0]);
+      indices=filas('DESIGNACIONES').map((x,idx)=>({x,idx})).filter(({x})=>grupo.miembros.some(({f:m})=>cupKey(m[0])===cupKey(x[2]))&&String(x[0])===dniObj&&(x[3]||'').toUpperCase()===(f[3]||'').toUpperCase()).map(({idx})=>idx);
+    }
+  } else if(!confirm('¿Dar de baja esta designación de '+f[1]+'?')) return;
+  indices.sort((a,b)=>b-a);
+  for(const idx of indices){ await apiPost({action:'borrar',entidad:'DESIGNACIONES',fila:idx+1}); BD['DESIGNACIONES'].filas.splice(idx,1); }
+  if(grupo.esGrupo && indices.length>1 && grupo.tiempoIdx!=null){
+    const sitBaja=(f[3]||'').toUpperCase();
+    const campoDoc = sitBaja==='SUPLENTE'?'SUPLENTE':'DOCENTE';
+    const campoDni = sitBaja==='SUPLENTE'?'DNI SUPLENTE':'DNI';
+    const iCd=ix('TIEMPOS',campoDoc), iCdni=ix('TIEMPOS',campoDni);
+    const tf=filas('TIEMPOS')[grupo.tiempoIdx].slice();
+    tf[iCd]=''; tf[iCdni]='';
+    await apiPost({action:'editar',entidad:'TIEMPOS',fila:grupo.tiempoIdx+1,valores:tf});
+    BD['TIEMPOS'].filas[grupo.tiempoIdx]=tf;
+  }
+  msg('Designación dada de baja'+(indices.length>1?' en las '+indices.length+' CUPOF del grupo':''));
+  render();
+}
+/** Formulario para crear una CUPOF nueva por partes (pedido explícito del usuario: TIPO, ESPACIO, CURSO,
+ *  DIV, TURNO, PLAN, CARGA, además del instrumento legal y la fecha de creación de la plaza). Arma el
+ *  texto final con buildCupofTexto() y muestra una vista previa editable antes de guardar. Al guardar,
+ *  crea la fila en CUPOF y deja la nueva CUPOF seleccionada en la pantalla de Designaciones para
+ *  continuar con la designación del docente. */
+function formCupofNueva(){
+  const d=document.getElementById('dlg');
+  const tipos=['PHC','HCG','HEXT','HREU','INFO','MEDI','AXDI','SECC','AYCP','BIBL','CACT','VDIR','PREC','DIR','SECD','CUTR','ASIG'];
+  const planes=['CNOC','BOI','CBOI','EGB3','COCN','CBS','PEG1','PHCS','COEG','BOD','COHC','CB','POFC'];
+  const estados=['Vigente','No autorizada (no disponible para asignación)'];
+  d.innerHTML=`<h2>Crear CUPOF nueva</h2>
+   <p class="mini">Completá cada parte; abajo se arma el texto final de la CUPOF siguiendo la convención de la base (sin espacios internos). Podés corregir el texto armado a mano antes de guardar si hace falta.</p>
+   <div class="fila">
+    <div><label>Clase</label><select id="ncClase"><option>Horas</option><option>Cargo</option></select></div>
+    <div><label>Tipo</label><input id="ncTipo" list="ncTipos" style="width:100px"><datalist id="ncTipos">${tipos.map(t=>`<option>${t}</option>`).join('')}</datalist></div>
+    <div><label>Espacio</label><input id="ncEspacio" style="width:160px" placeholder="Ej.: EDUCFISI, NING"></div>
+   </div>
+   <div class="fila" style="margin-top:8px">
+    <div><label>Curso</label><input id="ncCurso" style="width:70px"></div>
+    <div><label>Div.</label><input id="ncDiv" style="width:70px"></div>
+    <div><label>Turno</label><input id="ncTurno" style="width:70px" placeholder="MA/TA/NO/ST"></div>
+    <div><label>Plan (del sistema viejo)</label><input id="ncPlan" list="ncPlanes" style="width:110px"><datalist id="ncPlanes">${planes.map(p=>`<option>${p}</option>`).join('')}</datalist></div>
+    <div><label>Carga (horas)</label><input id="ncCarga" type="number" step="1" min="0" style="width:80px"></div>
+   </div>
+   <div class="fila" style="margin-top:8px">
+    <div><label><input type="checkbox" id="ncGrupo" style="width:auto;display:inline"> Pertenece a un Tiempo (grupo de CUPOF)</label></div>
+    <div><label>Sufijo del Tiempo</label><input id="ncSufijo" placeholder="Ej.: /169" style="width:100px"></div>
+   </div>
+   <div class="fila" style="margin-top:8px">
+    <div><label>Instrumento legal</label><input id="ncInstr" style="width:200px" placeholder="Ej.: Res. 514/83"></div>
+    <div><label>Fecha del instrumento / creación de la plaza</label><input id="ncFecha" placeholder="dd/mm/aaaa" style="width:120px"></div>
+    <div><label>Estado</label><select id="ncEstado">${estados.map(e=>`<option>${e}</option>`).join('')}</select></div>
+   </div>
+   <div style="margin-top:10px"><label>Texto de la CUPOF (armado automáticamente — se puede ajustar)</label>
+    <input id="ncPreview" class="cupofcell" style="width:100%">
+   </div>
+   <p id="ncAviso" class="mini"></p>
+   <div class="fila" style="margin-top:10px"><button class="b" id="ncOk">Crear CUPOF</button><button class="b sec" onclick="dlg.close()">Cancelar</button></div>`;
+  d.showModal();
+  const campos=['ncClase','ncTipo','ncEspacio','ncCurso','ncDiv','ncTurno','ncPlan','ncCarga','ncGrupo','ncSufijo'];
+  const actualizarPreview=()=>{
+    const p={
+      clase:document.getElementById('ncClase').value,
+      tipo:document.getElementById('ncTipo').value,
+      espacio:document.getElementById('ncEspacio').value,
+      curso:document.getElementById('ncCurso').value,
+      div:document.getElementById('ncDiv').value,
+      turno:document.getElementById('ncTurno').value,
+      plan:document.getElementById('ncPlan').value,
+      carga:document.getElementById('ncCarga').value,
+      esGrupo:document.getElementById('ncGrupo').checked,
+      sufijo:document.getElementById('ncSufijo').value
+    };
+    document.getElementById('ncPreview').value=buildCupofTexto(p);
+    document.getElementById('ncEspacio').placeholder=p.clase==='Cargo'?'NING (para cargos)':'Ej.: EDUCFISI, NING';
+  };
+  campos.forEach(id=>document.getElementById(id).addEventListener('input',actualizarPreview));
+  document.getElementById('ncClase').addEventListener('change',actualizarPreview);
+  actualizarPreview();
+  document.getElementById('ncOk').onclick=e=>accion(e.target,async()=>{
+    const texto=document.getElementById('ncPreview').value.trim();
+    if(!texto||!/53200/.test(texto))return msg('El texto de la CUPOF no parece válido');
+    const yaExiste=filas('CUPOF').some(f=>cupKey(f[0])===cupKey(texto));
+    if(yaExiste)return msg('Ya existe una CUPOF con esa misma clave — buscala en el listado en vez de crear una duplicada.',6000);
+    const clase=document.getElementById('ncClase').value;
+    const tipo=document.getElementById('ncTipo').value.toUpperCase();
+    const espacio=document.getElementById('ncEspacio').value.toUpperCase();
+    const curso=document.getElementById('ncCurso').value;
+    const div=document.getElementById('ncDiv').value.toUpperCase();
+    const turno=document.getElementById('ncTurno').value.toUpperCase();
+    const plan=document.getElementById('ncPlan').value.toUpperCase();
+    const carga=document.getElementById('ncCarga').value||(clase==='Cargo'?'C':'');
+    const sufijo=document.getElementById('ncGrupo').checked?document.getElementById('ncSufijo').value:'';
+    const instr=document.getElementById('ncInstr').value;
+    const fecha=document.getElementById('ncFecha').value;
+    const estado=document.getElementById('ncEstado').value;
+    const fila=[texto,clase,tipo,espacio,curso,div,turno,plan,carga,sufijo,instr,fecha,estado,'Alta manual ABM Designaciones '+new Date().toLocaleDateString('es-AR')];
+    try{
+      await apiPost({action:'crear',entidad:'CUPOF',valores:fila});
+      BD['CUPOF'].filas.push(fila);
+      d.close(); msg('CUPOF creada'); designCup=texto; rDesignaciones();
+    }catch(e){msg('Error: '+e.message);}
+  });
 }
 
 /* ============ VALIDADOR ============ */
