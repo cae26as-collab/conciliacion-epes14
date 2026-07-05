@@ -201,25 +201,23 @@ function usadoPropioEnCupof(cupTexto, docente){
   return asignacionesDelDocente(docente).filter(({f})=>cupKey(f[iAcu])===k).reduce((a,{f})=>a+unNum(f[iAh]),0);
 }
 /* ============ HORAS REALMENTE A CARGO DE CADA DOCENTE (respeta suplencias por licencia) ============
- * Confirmado por el usuario (05/07/2026, ajustado el mismo día): el titular/interino es el "dueño" real
- * de la CUPOF y SIEMPRE computa sus horas asignadas, exista o no una suplente cubriéndolo — el cómputo
- * del plan de estudios se hace sobre las horas titulares/interinas. Una designación SUPLENTE solo computa
- * sus propias horas cuando es "huérfana" (sin ningún titular/interino detrás en esa misma CUPOF; son
- * válidas y ya se contaban bien). Cuando hay suplente cubriendo a un titular/interino, esa cobertura se
- * documenta aparte (columna OBS. de la planilla final — ver genPlanilla), no se le resta el crédito al
- * titular/interino ni se le duplica a la suplente. */
+ * Confirmado por el usuario (05/07/2026, ajustado dos veces el mismo día):
+ *  1) El titular/interino es el "dueño" real de la CUPOF y SIEMPRE computa sus horas asignadas en el
+ *     CÓMPUTO OFICIAL del plan de estudios (caja curricular, CUPOF excedidas, "DOCENTE A CARGO" de la
+ *     planilla final — ver genPlanilla), exista o no una suplente cubriéndolo. Eso no se toca acá:
+ *     cargasCupof()/cajaDe()/asigsDe()/genPlanilla() ya suman por CUPOF sin importar el nombre del
+ *     docente, así que siempre reflejan esa prioridad sin necesitar este archivo.
+ *  2) PERO en la vista PERSONAL de cada docente (Reportes > Docentes, balanceDocentes) una suplente que
+ *     está cubriendo una licencia NO puede figurar como "disponible": esas horas ya están ocupadas para
+ *     ella, aunque el cómputo oficial las cuente del lado del titular/interino. Por eso acá se cuenta
+ *     TODA designación de un docente (titular, interino o suplente, huérfana o no) como "activa" para
+ *     su propia vista — dos personas distintas pueden tener la MISMA cupof como activa en su propio
+ *     reporte a la vez (el titular/interino no pierde nada, la suplente tampoco figura con horas libres
+ *     que en realidad no tiene): no es una suma global, es un cálculo aparte para cada uno. */
 function cuposActivosDeDocente(docente){
-  const iDnom=ix('DESIGNACIONES','DOCENTE'), iDcup=ix('DESIGNACIONES','CUPOF'), iDsit=ix('DESIGNACIONES','SIT. REVISTA');
-  const desTodas=filas('DESIGNACIONES');
-  const cuposConTitularInterino=new Set();
-  desTodas.forEach(d=>{ const s=String(d[iDsit]||'').toUpperCase().trim(); if(s==='TITULAR'||s==='INTERINO') cuposConTitularInterino.add(cupKey(d[iDcup])); });
+  const iDnom=ix('DESIGNACIONES','DOCENTE'), iDcup=ix('DESIGNACIONES','CUPOF');
   const activos=new Set();
-  desTodas.filter(d=>d[iDnom]===docente).forEach(d=>{
-    const k=cupKey(d[iDcup]); if(!k)return;
-    const situ=String(d[iDsit]||'').toUpperCase().trim();
-    const activo=situ==='SUPLENTE'?!cuposConTitularInterino.has(k):true;
-    if(activo)activos.add(k);
-  });
+  filas('DESIGNACIONES').filter(d=>d[iDnom]===docente).forEach(d=>{ const k=cupKey(d[iDcup]); if(k)activos.add(k); });
   return activos;
 }
 /** Filas de ASIGNACIONES que hoy cuentan como de este docente (ver cuposActivosDeDocente): todas las de
@@ -470,34 +468,30 @@ async function borrarPropuestaTiempo(i){
   catch(e){msg('Error: '+e.message);}
 }
 
-/** Designaciones de un docente por DNI (más confiable) con respaldo por nombre difuso (normE), en vez de
- *  comparación exacta de texto: el mismo docente puede estar escrito distinto en DOCENTES vs DESIGNACIONES
- *  (con/sin coma, con/sin acentos), y eso hacía que sus CUPOF con saldo no aparecieran para asignar. */
+/** Designaciones de un docente, EXCLUSIVAMENTE por DNI (confirmado por el usuario: la asociación
+ *  docente↔CUPOF/ASIGNACIONES siempre debe hacerse por DNI, nunca por apellido). Antes tenía un
+ *  "respaldo por nombre difuso" (primeros 8 caracteres del nombre normalizado) para las filas que no
+ *  tenían DNI completo — se sacó el 05/07/2026 porque generaba asociaciones cruzadas falsas entre
+ *  docentes que comparten apellido (Gaviláń, Giménez, Martínez, Navarrete: hay más de uno de cada uno
+ *  en la base). DNI ya está completo en DESIGNACIONES/ASIGNACIONES (ver "DNI sin completar" en
+ *  Validador), así que ya no hace falta ese respaldo — y si faltara, es mejor que no aparezca nada (se
+ *  nota enseguida) a que aparezca la fila de otra persona sin que se note. */
 function designacionesDelDocente(docente){
   const docRow=filas('DOCENTES').find(f=>f[1]===docente);
   const dni=docRow?String(docRow[0]).replace(/\D/g,''):'';
-  const ap=normE(docente).slice(0,9);
-  return filas('DESIGNACIONES').filter(f=>{
-    if(dni&&String(f[0]).replace(/\D/g,'')===dni)return true;
-    const fn=normE(f[1]);
-    return fn.includes(ap.slice(0,8))||ap.includes(fn.slice(0,8));
-  });
+  if(!dni)return [];
+  return filas('DESIGNACIONES').filter(f=>String(f[0]).replace(/\D/g,'')===dni);
 }
-/** Asignaciones de un docente por DNI (si ASIGNACIONES ya tiene esa columna y la fila la tiene completa)
- *  con respaldo por nombre difuso para las filas viejas que todavía no la tienen. Devuelve pares {f,i}
- *  (índice dentro de filas('ASIGNACIONES')) para poder editar/auditar la fila si hace falta. Centraliza
- *  acá el criterio de "qué asignaciones son de este docente" para no repetirlo distinto en cada reporte. */
+/** Asignaciones de un docente, EXCLUSIVAMENTE por DNI (ver designacionesDelDocente arriba — mismo
+ *  criterio, misma razón). Devuelve pares {f,i} (índice dentro de filas('ASIGNACIONES')) para poder
+ *  editar/auditar la fila si hace falta. Centraliza acá el criterio de "qué asignaciones son de este
+ *  docente" para no repetirlo distinto en cada reporte. */
 function asignacionesDelDocente(docente){
   const docRow=filas('DOCENTES').find(f=>f[1]===docente);
   const dni=docRow?String(docRow[0]).replace(/\D/g,''):'';
-  const iAdo=ix('ASIGNACIONES','DOCENTE'), iAdni=ix('ASIGNACIONES','DNI');
-  const ap=normE(docente).slice(0,9);
-  return filas('ASIGNACIONES').map((f,i)=>({f,i})).filter(({f})=>{
-    if(dni&&iAdni>-1&&f[iAdni]&&String(f[iAdni]).replace(/\D/g,'')===dni)return true;
-    if(!f[iAdo])return false;
-    const fn=normE(f[iAdo]);
-    return fn.includes(ap.slice(0,8))||ap.includes(fn.slice(0,8));
-  });
+  const iAdni=ix('ASIGNACIONES','DNI');
+  if(!dni||iAdni===-1)return [];
+  return filas('ASIGNACIONES').map((f,i)=>({f,i})).filter(({f})=>f[iAdni]&&String(f[iAdni]).replace(/\D/g,'')===dni);
 }
 function cupofSelect(docente,cargas,actual){
   const kAct=actual?cupKey(actual):null;
@@ -672,6 +666,21 @@ function rDatos(){
     <div><label>Instrumento</label><select id="fI"><option value="">(todos)</option>${uniq(ix('CUPOF','INSTRUMENTO')).map(x=>`<option ${x===fInstr?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
     <div><label>Curso</label><select id="fC"><option value="">(todos)</option>${uniq(ix('CUPOF','CURSO')).map(x=>`<option ${x===fCurso?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
     <div><label>Plan</label><select id="fP"><option value="">(todos)</option>${uniq(ix('CUPOF','PLAN')).map(x=>`<option ${x===fPlan?'selected':''}>${esc(x)}</option>`).join('')}</select></div>`:'';
+  // Cuando la entidad es CUPOF, se muestra debajo el listado de docentes designados en cada CUPOF
+  // visible (por cupKey, no por texto literal), con su situación de revista — pedido del usuario para
+  // ver de un vistazo "quién tiene esta CUPOF" sin salir de la pantalla de Datos.
+  let docsCupofHTML='';
+  if(entSel==='CUPOF'&&fls.length){
+    const iDdo=ix('DESIGNACIONES','DOCENTE'),iDcu=ix('DESIGNACIONES','CUPOF'),iDsit=ix('DESIGNACIONES','SIT. REVISTA');
+    docsCupofHTML=`<div class="tabla-wrap" style="margin-top:14px"><p style="font-weight:bold;margin:0 0 4px">Docentes designados en la/las CUPOF de arriba</p>
+     <table><tr><th>CUPOF</th><th>DOCENTE</th><th>SITUACIÓN</th></tr>
+     ${fls.map(({f})=>{
+       const k=cupKey(f[0]);
+       const desigs=filas('DESIGNACIONES').filter(d=>cupKey(d[iDcu])===k);
+       if(!desigs.length)return `<tr><td class="cupofcell">${esc(f[0])}</td><td colspan="2" class="mini">(sin docentes designados)</td></tr>`;
+       return desigs.map((d,idx)=>`<tr>${idx===0?`<td rowspan="${desigs.length}" class="cupofcell">${esc(f[0])}</td>`:''}<td>${esc(d[iDdo])}</td><td>${esc(d[iDsit])}</td></tr>`).join('');
+     }).join('')}</table></div>`;
+  }
   v.innerHTML=`<div class="card"><div class="fila">
     <div><label>Entidad</label><select id="dEnt">${ents.map(e=>`<option ${e===entSel?'selected':''}>${e}</option>`).join('')}</select></div>
     <div><label>Buscar</label><input id="dBusca" value="${esc(filtro)}"></div>${filtrosCupof}
@@ -679,7 +688,7 @@ function rDatos(){
     <button class="b sec" onclick="exportCSV(entSel)">CSV</button><span class="mini">${fls.length} filas</span></div></div>
   <div class="tabla-wrap"><table><tr>${cs.map(c=>`<th>${esc(c)}</th>`).join('')}${ROL==='admin'?'<th></th>':''}</tr>
   ${fls.slice(0,900).map(({f,i})=>`<tr>${f.map(c=>`<td>${esc(String(c??'')).slice(0,140)}</td>`).join('')}
-   ${ROL==='admin'?`<td style="white-space:nowrap"><a href="#" onclick="editarFila('${entSel}',${i});return false">✎</a> <a href="#" onclick="accion(this,()=>borrarFila('${entSel}',${i}));return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>`;
+   ${ROL==='admin'?`<td style="white-space:nowrap"><a href="#" onclick="editarFila('${entSel}',${i});return false">✎</a> <a href="#" onclick="accion(this,()=>borrarFila('${entSel}',${i}));return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>${docsCupofHTML}`;
   document.getElementById('dEnt').onchange=e=>{entSel=e.target.value;filtro=fInstr=fCurso=fPlan='';rDatos();};
   document.getElementById('dBusca').oninput=e=>{filtro=e.target.value;rDatos();};
   if(entSel==='CUPOF'){document.getElementById('fI').onchange=e=>{fInstr=e.target.value;rDatos();};
@@ -776,6 +785,27 @@ function calcularValidacion(){
     const f=c.fila; return {plan:f[ix('CUPOF','PLAN')],esp:f[ix('CUPOF','ESPACIO')],cup:f[0],usado:c.usado,carga:c.carga};
   });
   excedidas.forEach(e=>add('grave',`CUPOF ${e.cup} (${e.esp}, ${e.plan}): tiene asignadas ${e.usado} hs sobre una carga de ${e.carga} hs — hay que reducir alguna asignación`));
+  // ====== Asignaciones cuyo docente (por DNI) no tiene ninguna DESIGNACIONES real en esa CUPOF ======
+  // (posible asociación incorrecta cupof↔docente, del tipo "se asoció por apellido y no por DNI" —
+  //  solo reporta, no corrige nada: la corrección la hace el usuario en Datos)
+  const iAdniAud=ix('ASIGNACIONES','DNI');
+  const sinDesigReal=[];
+  if(iAdniAud>-1){
+    const cupofPorDni={};
+    filas('DESIGNACIONES').forEach(d=>{
+      const dni=String(d[0]).replace(/\D/g,''); if(!dni)return;
+      const k=cupKey(d[2]); if(!k)return;
+      (cupofPorDni[dni]=cupofPorDni[dni]||new Set()).add(k);
+    });
+    filas('ASIGNACIONES').forEach((f,i)=>{
+      const txt=f[iAcuAud]; if(!txt)return; // sin CUPOF de origen = vacante explícita, no aplica
+      const k=cupKey(txt); if(!k||!cupIdxHoras[k])return; // ya se reporta como huérfana, no duplicar
+      const dni=f[iAdniAud]?String(f[iAdniAud]).replace(/\D/g,''):'';
+      if(!dni)return; // sin DNI completo todavía, ya se reporta en "DNI sin completar"
+      const propias=cupofPorDni[dni];
+      if(!propias||!propias.has(k))sinDesigReal.push({i,f});
+    });
+  }
   // ====== CARGA vs. lo que indica el propio texto de la CUPOF (GH# o número final) ======
   const cargaMal=[];
   filas('CUPOF').forEach((f,i)=>{
@@ -812,12 +842,12 @@ function calcularValidacion(){
       dniFaltante.push({i,f,candidatos});
     });
   }
-  return {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,
+  return {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
     iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,HD};
 }
 function rValidador(){
   const v=document.getElementById('v-validador');
-  const {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,
+  const {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
     iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,HD}=calcularValidacion();
   v.innerHTML=`<div class="card"><h2>Validador</h2>
    <div class="fila" style="margin-bottom:8px">
@@ -836,6 +866,13 @@ function rValidador(){
    <p style="font-weight:bold;margin:14px 0 4px">Asignaciones cuya clave no matchea ninguna CUPOF de horas — huérfanas (${huerfanas.length})</p>
    ${huerfanas.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>CUPOF (texto origen)</th><th></th></tr>
     ${huerfanas.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(f[iAdoAud])}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
+     <td>${ROL==='admin'?`<a href="#" onclick="editarFila('ASIGNACIONES',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
+  </div>
+  <div class="card"><h3>Asignaciones sin designación real en esa CUPOF (${sinDesigReal.length})</h3>
+   <p class="mini">Para cada asignación con DNI completo, se busca si ese docente (por DNI) tiene alguna DESIGNACIONES en esa misma CUPOF. Si no la tiene, la asociación cupof↔docente puede estar mal hecha (por ejemplo, por apellido en vez de DNI, cuando hay dos docentes con el mismo apellido). Esto solo reporta — la corrección se hace a mano en Datos.</p>
+   ${ix('ASIGNACIONES','DNI')===-1?`<p class="mini">Todavía no existe la columna DNI en ASIGNACIONES: correr <b>agregarColumnaDniAsignaciones()</b> una vez desde Apps Script para habilitar esta sección.</p>`:
+   sinDesigReal.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>CUPOF (texto origen)</th><th></th></tr>
+    ${sinDesigReal.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(f[iAdoAud])}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
      <td>${ROL==='admin'?`<a href="#" onclick="editarFila('ASIGNACIONES',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>
   <div class="card"><h3>CARGA en blanco (0) — se puede completar con lo que indica el texto</h3>
