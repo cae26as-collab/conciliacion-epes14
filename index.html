@@ -132,7 +132,7 @@ function cargaDesdeCupof(s){
   if(mFin)return Number(mFin[1]);
   return null;
 }
-/** Quita todo espacio interno del texto de una CUPOF (no debe haber espacios entre guiones ni
+/** Quita todo los espacios interno del texto de una CUPOF (no debe haber espacios entre guiones ni
  *  dentro del nombre del espacio curricular). No toca el separador entre varias CUPOF pegadas:
  *  usar SIEMPRE después de dividir, sobre una sola CUPOF por celda. */
 function compactarCupof(s){return String(s??'').replace(/\s+/g,'');}
