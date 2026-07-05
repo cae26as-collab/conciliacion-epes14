@@ -181,10 +181,15 @@ function cajaDe(plan,curso,inclFuera){const iEp=ix('ESPACIOS','PLAN'),iEc=ix('ES
     .map(f=>({nom:f[iEe],n:normE(f[iEe]),hs:unNum(f[iEh]),fuera:f[iEf]==='Sí'}));}
 
 /* ============ SALDOS DE CUPOF ============ */
+/** Una CUPOF cuenta para carga/disponibilidad salvo que su ESTADO diga explícitamente otra cosa que
+ *  no sea "Vigente" (ej.: "No autorizada..." — solicitada al Ministerio pero rechazada). Estas CUPOF
+ *  siguen existiendo en la hoja CUPOF como registro, pero no deben sumar disponibilidad a nadie ni
+ *  aparecer como opción para asignar horas nuevas. */
+function cupofDisponible(f){ const iEst=ix('CUPOF','ESTADO'); const est=iEst>-1?String(f[iEst]||'').trim():''; return !est||est==='Vigente'; }
 function cargasCupof(){ // key -> {carga, usado, docs:[docentes designados]}
   const m={};
   const iCa=ix('CUPOF','CARGA'), iCl=ix('CUPOF','CLASE');
-  filas('CUPOF').forEach(f=>{if(f[iCl]!=='Horas')return;const k=cupKey(f[0]);m[k]={carga:unNum(f[iCa]),usado:0,fila:f};});
+  filas('CUPOF').forEach(f=>{if(f[iCl]!=='Horas')return;if(!cupofDisponible(f))return;const k=cupKey(f[0]);m[k]={carga:unNum(f[iCa]),usado:0,fila:f};});
   const iAh=ix('ASIGNACIONES','HS'), iAcu=ix('ASIGNACIONES','CUPOF (texto origen)');
   filas('ASIGNACIONES').forEach(a=>{const k=cupKey(a[iAcu]);if(m[k])m[k].usado+=unNum(a[iAh]);});
   return m;
@@ -226,12 +231,24 @@ function render(tab){tab=tab||document.querySelector('nav button.act').dataset.t
 
 /* ============ CONCILIADOR (edición en línea) ============ */
 let selPlan='CBS-672', selCurso='1°', selDiv='I', addEsp=null, addDoc='', editIdx=null, editDoc='';
+let conTab='horas';
 function asigsDe(plan,curso,div){
   const iP=ix('ASIGNACIONES','PLAN DESTINO'),iC=ix('ASIGNACIONES','CURSO'),iD=ix('ASIGNACIONES','DIV.');
   return filas('ASIGNACIONES').map((f,i)=>({f,i})).filter(({f})=>PLAN_MAP[f[iP]]===plan&&String(f[iC])===String(curso)&&(!div||String(f[iD]||'I')===div));
 }
+/** Dispatcher de la pestaña Conciliador: dos subpestañas — "Asignación de Horas" (edición en línea,
+ *  caja vs asignaciones, la de siempre) y "Asignación para crear Tiempos" (propuesta de agrupar CUPOF
+ *  sueltas de un mismo docente en un nuevo Tiempo PTP/PTC, más consulta de los Tiempos ya existentes). */
 function rConciliador(){
   const v=document.getElementById('v-conciliador');
+  v.innerHTML=`<div class="card" style="margin-bottom:10px;padding:0;border:0;background:none">
+    <span class="subtab ${conTab==='horas'?'act':''}" onclick="conTab='horas';rConciliador()">Asignación de Horas</span>
+    <span class="subtab ${conTab==='tiempos'?'act':''}" onclick="conTab='tiempos';rConciliador()">Asignación para crear Tiempos</span>
+  </div><div id="conBody"></div>`;
+  if(conTab==='horas') rConciliadorHoras(); else rConciliadorTiempos();
+}
+function rConciliadorHoras(){
+  const v=document.getElementById('conBody');
   const planes=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
   const cursos=selPlan==='CBS-672'?['1°','2°','3°']:selPlan==='BEA-EPJA'?['M5','M6','M7','M8','M9','M10']:['4°','5°','6°'];
   if(!cursos.includes(selCurso))selCurso=cursos[0];
@@ -304,6 +321,104 @@ function rConciliador(){
   document.getElementById('cCurso').onchange=e=>{selCurso=e.target.value;addEsp=null;rConciliador();};
   document.getElementById('cDiv').onchange=e=>{selDiv=e.target.value;addEsp=null;rConciliador();};
 }
+
+/* ============ ASIGNACIÓN PARA CREAR TIEMPOS (propuesta, no escribe en CUPOF/TIEMPOS) ============
+ * Dos secciones: (1) Consulta de un Tiempo ya existente — qué CUPOF tiene agrupadas y si la suma
+ * coincide con sus horas declaradas; (2) Propuesta de un Tiempo nuevo — elegís un docente, marcás
+ * CUPOF sueltas suyas (de clase "Horas", sin SUFIJO TIEMPO todavía) y armás un grupo cuya suma debería
+ * dar un valor válido (PTP 12/18/24/30, o PTC exactamente 36). Guardar NO toca CUPOF ni TIEMPOS: solo
+ * registra la propuesta en la hoja PROPUESTAS_TIEMPO, para la planilla "PROPUESTA DE CREACIÓN DE
+ * CARGOS" — la creación real del Tiempo la decide y aplica el usuario aparte si el Ministerio aprueba. */
+let propTiempoSel='', propDoc='', propSel={};
+const VALORES_TIEMPO_VALIDOS=[12,18,24,30,36];
+function tipoDeHoras(hs){ if(hs===36)return 'PTC 36'; if([12,18,24,30].includes(hs))return 'PTP '+hs; return null; }
+function rConciliadorTiempos(){
+  const v=document.getElementById('conBody');
+  const iSuf=ix('CUPOF','SUFIJO TIEMPO'), iCarga=ix('CUPOF','CARGA'), iClase=ix('CUPOF','CLASE');
+  const cupHorasIdx={}; // sufijo -> [{cup,carga}]
+  filas('CUPOF').forEach(f=>{ if(f[iClase]!=='Horas')return; const suf=f[iSuf]; if(!suf)return; (cupHorasIdx[suf]=cupHorasIdx[suf]||[]).push({cup:f[0],carga:unNum(f[iCarga])}); });
+  const tiempos=filas('TIEMPOS');
+  const iTsuf=ix('TIEMPOS','SUFIJO'),iTtipo=ix('TIEMPOS','TIPO'),iThs=ix('TIEMPOS','HS'),iTdoc=ix('TIEMPOS','DOCENTE'),iTsup=ix('TIEMPOS','SUPLENTE');
+  if(!propTiempoSel)propTiempoSel=tiempos[0]?tiempos[0][iTsuf]:'';
+  const tRow=tiempos.find(t=>String(t[iTsuf])===String(propTiempoSel));
+  const grupo=cupHorasIdx[propTiempoSel]||[];
+  const sumaGrupo=grupo.reduce((a,g)=>a+g.carga,0);
+  const declarado=tRow?unNum(tRow[iThs]):0;
+
+  const docs=filas('DOCENTES').map(f=>f[1]).sort();
+  if(!propDoc)propDoc=docs[0]||'';
+  const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
+  const sueltas=designacionesDelDocente(propDoc).map(f=>{
+    const c=cupIdx[cupKey(f[2])];
+    if(!c||c[iClase]!=='Horas'||c[iSuf])return null; // solo horas sueltas, sin Tiempo asignado todavía
+    return {key:cupKey(f[2]),cup:c[0],carga:unNum(c[iCarga])};
+  }).filter(Boolean);
+  const vistos=new Set(); const sueltasUnicas=sueltas.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
+  const marcadas=sueltasUnicas.filter(x=>propSel[x.key]);
+  const sumaProp=marcadas.reduce((a,x)=>a+x.carga,0);
+  const tipoSug=tipoDeHoras(sumaProp);
+  const docRow=filas('DOCENTES').find(f=>f[1]===propDoc);
+  const dni=docRow?docRow[0]:'';
+
+  const propuestas=filas('PROPUESTAS_TIEMPO')||[];
+
+  v.innerHTML=`<div class="card"><h3>Consultar un Tiempo existente</h3>
+   <p class="mini">Elegí un sufijo de Tiempo para ver qué CUPOF de horas tiene agrupadas hoy y si la suma coincide con lo declarado.</p>
+   <div class="fila"><div><label>Tiempo (sufijo)</label><select id="tSel">${tiempos.map(t=>`<option value="${esc(t[iTsuf])}" ${String(t[iTsuf])===String(propTiempoSel)?'selected':''}>${esc(t[iTsuf])} — ${esc(t[iTtipo])} ${esc(t[iThs])}hs — ${esc(t[iTdoc]||t[iTsup]||'')}</option>`).join('')}</select></div></div>
+   ${tRow?`<p style="margin-top:8px"><b>Declarado:</b> ${esc(tRow[iTtipo])} ${declarado}hs · <b>Docente:</b> ${esc(tRow[iTdoc]||'')}${tRow[iTsup]?` · <b>Suplente:</b> ${esc(tRow[iTsup])}`:''}
+    · <b>Suma de sus CUPOF:</b> <span${sumaGrupo!==declarado?' style="color:#c00;font-weight:bold"':''}>${sumaGrupo}hs${sumaGrupo!==declarado?' ⚠ no coincide':''}</span></p>
+    <div class="tabla-wrap"><table><tr><th>CUPOF</th><th>CARGA</th></tr>${grupo.map(g=>`<tr><td class="cupofcell">${esc(g.cup)}</td><td>${g.carga}</td></tr>`).join('')||'<tr><td colspan="2" class="mini">Ninguna CUPOF con este sufijo</td></tr>'}</table></div>`:'<p class="mini">No hay Tiempos cargados.</p>'}
+  </div>
+  <div class="card"><h3>Proponer un Tiempo nuevo</h3>
+   <p class="mini">Elegí un docente y marcá sus CUPOF sueltas (de horas, sin Tiempo asignado todavía) que querés agrupar en un Tiempo nuevo. Solo se guarda como propuesta — no modifica CUPOF ni TIEMPOS.</p>
+   <div class="fila"><div><label>Docente</label><select id="pDoc">${docs.map(d=>`<option ${d===propDoc?'selected':''}>${esc(d)}</option>`).join('')}</select></div></div>
+   ${sueltasUnicas.length?`<div class="tabla-wrap" style="margin-top:8px"><table><tr><th></th><th>CUPOF</th><th>CARGA</th></tr>
+    ${sueltasUnicas.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td></tr>`).join('')}</table></div>`
+    :'<p class="mini">Este docente no tiene CUPOF de horas sueltas (sin Tiempo) disponibles para agrupar.</p>'}
+   <p style="margin-top:8px"><b>Suma marcada:</b> ${sumaProp}hs — ${tipoSug?`<span class="pill ok">${tipoSug} ✔ válido</span>`:marcadas.length?`<span class="pill exceso">⚠ no coincide con un valor de Tiempo (12/18/24/30 PTP, 36 PTC)</span>`:''}</p>
+   <div><label>Observación (opcional)</label><input id="pObs" style="width:100%"></div>
+   ${ROL==='admin'?`<div class="fila" style="margin-top:8px"><button class="b ${marcadas.length?'':'sec'}" ${marcadas.length?'':'disabled'} onclick="accion(this,guardarPropuestaTiempo)">💾 Guardar propuesta</button></div>`:''}
+  </div>
+  <div class="card"><h3>Propuestas guardadas (${propuestas.length})</h3>
+   ${propuestas.length?`<div class="tabla-wrap"><table><tr><th>FECHA</th><th>DOCENTE</th><th>TIPO</th><th>HORAS</th><th>CUPOF INCLUIDAS</th><th>OBS</th>${ROL==='admin'?'<th></th>':''}</tr>
+    ${propuestas.map((f,i)=>`<tr><td>${esc(f[0])}</td><td>${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td class="mini">${esc(f[5])}</td><td class="mini">${esc(f[7])}</td>${ROL==='admin'?`<td><a href="#" onclick="accion(this,()=>borrarPropuestaTiempo(${i})); return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>`:'<p class="mini">Ninguna todavía.</p>'}
+  </div>`;
+  document.getElementById('tSel').onchange=e=>{propTiempoSel=e.target.value;rConciliadorTiempos();};
+  document.getElementById('pDoc').onchange=e=>{propDoc=e.target.value;propSel={};rConciliadorTiempos();};
+}
+async function guardarPropuestaTiempo(){
+  const iSuf=ix('CUPOF','SUFIJO TIEMPO'), iCarga=ix('CUPOF','CARGA'), iClase=ix('CUPOF','CLASE');
+  const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
+  const sueltas=designacionesDelDocente(propDoc).map(f=>{
+    const c=cupIdx[cupKey(f[2])];
+    if(!c||c[iClase]!=='Horas'||c[iSuf])return null;
+    return {key:cupKey(f[2]),cup:c[0],carga:unNum(c[iCarga])};
+  }).filter(Boolean);
+  const vistos=new Set(); const sueltasUnicas=sueltas.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
+  const marcadas=sueltasUnicas.filter(x=>propSel[x.key]);
+  if(!marcadas.length)return msg('Marcá al menos una CUPOF para proponer un Tiempo.');
+  const suma=marcadas.reduce((a,x)=>a+x.carga,0);
+  const tipo=tipoDeHoras(suma);
+  if(!tipo && !confirm(`La suma marcada (${suma}hs) no coincide con un valor de Tiempo válido (12/18/24/30 PTP, 36 PTC). ¿Guardar la propuesta igual, para revisar después?`))return;
+  const docRow=filas('DOCENTES').find(f=>f[1]===propDoc);
+  const fecha=new Date().toLocaleDateString('es-AR');
+  const vals=['FECHA','DNI','DOCENTE','TIPO PROPUESTO','HORAS TOTAL','CUPOF INCLUIDAS','ESTADO','OBS','USUARIO'].map(col=>({
+    'FECHA':fecha,'DNI':docRow?docRow[0]:'','DOCENTE':propDoc,'TIPO PROPUESTO':tipo||'(sin coincidencia)','HORAS TOTAL':suma,
+    'CUPOF INCLUIDAS':marcadas.map(x=>x.cup).join(' / '),'ESTADO':'propuesta','OBS':document.getElementById('pObs').value||'',
+    'USUARIO':localStorage.getItem('conc_nombre')||''}[col]));
+  try{
+    await apiPost({action:'crear',entidad:'PROPUESTAS_TIEMPO',valores:vals});
+    BD['PROPUESTAS_TIEMPO'].filas.push(vals.map(String));
+    propSel={};
+    msg('Propuesta guardada');rConciliadorTiempos();
+  }catch(e){msg('Error: '+e.message);}
+}
+async function borrarPropuestaTiempo(i){
+  if(!confirm('¿Quitar esta propuesta de Tiempo?'))return;
+  try{await apiPost({action:'borrar',entidad:'PROPUESTAS_TIEMPO',fila:i+1});BD['PROPUESTAS_TIEMPO'].filas.splice(i,1);msg('Quitada');rConciliadorTiempos();}
+  catch(e){msg('Error: '+e.message);}
+}
+
 /** Designaciones de un docente por DNI (más confiable) con respaldo por nombre difuso (normE), en vez de
  *  comparación exacta de texto: el mismo docente puede estar escrito distinto en DOCENTES vs DESIGNACIONES
  *  (con/sin coma, con/sin acentos), y eso hacía que sus CUPOF con saldo no aparecieran para asignar. */
@@ -603,7 +718,10 @@ function calcularValidacion(){
     const k=cupKey(txt);
     if(!k||!cupIdxHoras[k])huerfanas.push({i,f});
   });
-  const excedidas=Object.entries(cargas).filter(([k,c])=>c.usado>c.carga).map(([k,c])=>{
+  // Misma excepción admitida de arriba (histórico del Ministerio, irresoluble, confirmado por el usuario):
+  // esta CUPOF puntual tiene 2 docentes designados por el mismo error, cada uno con su carga completa —
+  // no se reporta como "excedida" aunque la suma de asignaciones duplique su carga nominal.
+  const excedidas=Object.entries(cargas).filter(([k,c])=>c.usado>c.carga&&!EXCEP_DOBLE.has(k)).map(([k,c])=>{
     const f=c.fila; return {plan:f[ix('CUPOF','PLAN')],esp:f[ix('CUPOF','ESPACIO')],cup:f[0],usado:c.usado,carga:c.carga};
   });
   excedidas.forEach(e=>add('grave',`CUPOF ${e.cup} (${e.esp}, ${e.plan}): tiene asignadas ${e.usado} hs sobre una carga de ${e.carga} hs — hay que reducir alguna asignación`));
@@ -692,7 +810,7 @@ function rValidador(){
     }</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguno ✔</p>'}`}
   </div>
   <div class="card"><h3>Posibles CUPOF duplicadas por variante de ortografía del espacio</h3>
-   <p class="mini">Misma estructura (tipo · curso · división · turno · plan · carga) , pero el nombre del espacio está escrito distinto en más de una fila de la hoja CUPOF. Puede ser la misma CUPOF cargada dos veces con otra redacción (unificar a mano en Datos) o dos espacios genuinamente distintos que coinciden en esos datos (no hacer nada).</p>
+   <p class="mini">Misma estructura (tipo · curso · división · turno · plan · carga) pero el nombre del espacio está escrito distinto en más de una fila de la hoja CUPOF. Puede ser la misma CUPOF cargada dos veces con otra redacción (unificar a mano en Datos) o dos espacios genuinamente distintos que coinciden en esos datos (no hacer nada).</p>
    ${variantesCupof.length?`<div class="tabla-wrap"><table><tr><th>ESTRUCTURA (tipo·curso·div·turno·plan·carga)</th><th>CUPOF</th><th>ESPACIO tal como está escrito</th></tr>
     ${variantesCupof.map(g=>g.items.map((it,idx)=>`<tr>${idx===0?`<td rowspan="${g.items.length}" class="mini">${esc(g.key.replace(/\|/g,' · '))}</td>`:''}<td class="cupofcell">${esc(it.cup)}</td><td>${esc(it.espacio)}</td></tr>`).join('')).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>`;
@@ -707,10 +825,15 @@ function verAsignacionesDeCupof(cupofTxt){
   const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAp=ix('ASIGNACIONES','PLAN DESTINO'),iAc=ix('ASIGNACIONES','CURSO'),
         iAd=ix('ASIGNACIONES','DIV.'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAdo=ix('ASIGNACIONES','DOCENTE');
   const encontradas=filas('ASIGNACIONES').filter(f=>cupKey(f[iAcu])===k);
+  const cc=cargasCupof()[k];
+  const carga=cc?cc.carga:null, usado=cc?cc.usado:encontradas.reduce((a,f)=>a+hsNum(f[iAh]),0);
+  const disp=carga!=null?Math.round((carga-usado)*10)/10:null;
+  const excedida=carga!=null&&usado>carga;
   const d=document.getElementById('dlg');
   d.innerHTML=`<h2>Asignaciones que cuentan para esta CUPOF</h2>
    <p class="mini">Buscadas por clave normalizada (cupKey), igual que hace el Validador — no por coincidencia literal de texto.</p>
    <p class="cupofcell">${esc(cupofTxt)}</p>
+   ${carga!=null?`<p><b>CARGA:</b> ${carga} &nbsp; <b>USADO:</b> ${usado} &nbsp; <b>DISPONIBLE:</b> <span${excedida?' style="color:#c00;font-weight:bold"':''}>${disp}${excedida?' ⚠ EXCEDIDA':''}</span></p>`:'<p class="mini">Esta CUPOF no figura en la hoja CUPOF (o no es de clase "Horas") — no tiene carga nominal contra la cual comparar.</p>'}
    ${encontradas.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>DIV.</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>TEXTO ORIGEN (tal cual guardado)</th></tr>
     ${encontradas.map(f=>`<tr><td>${esc(f[iAp])}</td><td>${esc(f[iAc])}</td><td>${esc(f[iAd])}</td><td>${esc(f[iAe])}</td><td>${esc(f[iAdo])}</td><td>${esc(f[iAh])}</td><td class="cupofcell">${esc(f[iAcu])}</td></tr>`).join('')}</table></div>`
     :'<p class="mini">Ninguna asignación cuenta contra esta CUPOF todavía — el saldo disponible debería ser igual a la carga total.</p>'}
@@ -779,7 +902,7 @@ let repTab='docentes', repDoc='', ordBal={col:0,asc:true};
  *  y la CARGA real de cada CUPOF), total declarado, horas ya asignadas en el plan nuevo, disponible
  *  (declarado - asignado), y el tiempo PTP/PTC que declara (si alguna de sus CUPOF pertenece a un tiempo). */
 function balanceDocentes(){
-  const cupIdxHoras={}; filas('CUPOF').forEach(f=>{ if(f[ix('CUPOF','CLASE')]==='Horas') cupIdxHoras[cupKey(f[0])]=f; });
+  const cupIdxHoras={}; filas('CUPOF').forEach(f=>{ if(f[ix('CUPOF','CLASE')]==='Horas' && cupofDisponible(f)) cupIdxHoras[cupKey(f[0])]=f; });
   const iAdo=ix('ASIGNACIONES','DOCENTE'), iAh=ix('ASIGNACIONES','HS');
   const iSuf=ix('CUPOF','SUFIJO TIEMPO'), iCarga=ix('CUPOF','CARGA');
   const iTt=ix('TIEMPOS','TIPO'), iTh=ix('TIEMPOS','HS');
@@ -816,6 +939,12 @@ function rReportes(){
     const docs=filas('DOCENTES').map(f=>f[1]).sort(); if(!repDoc)repDoc=docs[0]||'';
     const desg=filas('DESIGNACIONES').filter(f=>f[1]===repDoc);
     const asg=asignacionesDelDocente(repDoc).map(x=>x.f);
+    // Mini resumen de horas del docente elegido, reutilizando el mismo cálculo que la pestaña "Balance por
+    // docente" (mismas cifras, no se recalcula distinto acá para no tener dos criterios de lo mismo).
+    const balDoc=balanceDocentes().find(r=>r.nombre===repDoc);
+    const resumenDoc=balDoc?`<span class="mini"><b>Cantidad de horas:</b>
+      Total <b>${balDoc.declarado}</b> · Titulares <b>${balDoc.titular}</b> · Interinas <b>${balDoc.interino}</b> ·
+      Suplentes <b>${balDoc.suplente}</b> · Disponibles <b>${balDoc.disponible}</b></span>`:'';
     // agrupar asignaciones por plan+curso+div+espacio (espacio una sola vez, CUPOF apiladas)
     const grupos={};
     asg.forEach(f=>{const k=[f[ix('ASIGNACIONES','PLAN DESTINO')],f[ix('ASIGNACIONES','CURSO')],f[ix('ASIGNACIONES','DIV.')],f[ix('ASIGNACIONES','ESPACIO DESTINO')]].join('||');(grupos[k]=grupos[k]||[]).push(f);});
@@ -829,10 +958,14 @@ function rReportes(){
         filasAsig+=`<tr>${j===0?`<td rowspan="${lst.length}">${esc(pl)}</td><td rowspan="${lst.length}">${esc(cu)}</td><td rowspan="${lst.length}">${esc(dv)}</td><td rowspan="${lst.length}">${esc(es)}</td><td rowspan="${lst.length}">${m?m.hs:''}</td>`:''}
          <td class="cupofcell">${esc(f[ix('ASIGNACIONES','CUPOF (texto origen)')])}</td><td>${esc(f[ix('ASIGNACIONES','HS')])}</td></tr>`;});
     });
-    cuerpo=`<div class="fila"><div><label>Docente</label><select id="rDoc">${docs.map(d=>`<option ${d===repDoc?'selected':''}>${esc(d)}</option>`).join('')}</select></div></div>
+    cuerpo=`<div class="fila" style="align-items:center">
+      <div><label>Docente</label><select id="rDoc">${docs.map(d=>`<option ${d===repDoc?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+      <div>${resumenDoc}</div>
+    </div>
     <h3>Designaciones (${desg.length})</h3>
-    <div class="tabla-wrap"><table><tr><th>CUPOF</th><th>SITUACIÓN</th><th>INSTRUMENTO</th><th>FECHA</th></tr>
-    ${desg.map(f=>{const c=cupIdx[cupKey(f[2])]||[];return `<tr><td class="cupofcell">${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(c[ix('CUPOF','INSTRUMENTO')]||'')}</td><td>${esc(c[ix('CUPOF','FECHA')]||'')}</td></tr>`;}).join('')}</table></div>
+    <p class="mini">Clic en una CUPOF para ver todas las asignaciones que cuentan contra ella (de cualquier docente) y controlar cuánto le queda disponible.</p>
+    <div class="tabla-wrap"><table><tr><th>CUPOF</th><th>SITUACIÓN</th><th>INSTRUMENTO</th><th>FECHA</th><th>CARGA</th><th>USADO (todos)</th><th>DISPONIBLE</th></tr>
+    ${(()=>{const cargasIdx=cargasCupof();return desg.map(f=>{const c=cupIdx[cupKey(f[2])]||[];const cc=cargasIdx[cupKey(f[2])];const carga=cc?cc.carga:'';const usado=cc?cc.usado:'';const disp=cc?Math.round((cc.carga-cc.usado)*10)/10:'';const excedida=cc&&cc.usado>cc.carga;return `<tr><td class="cupofcell"><a href="#" onclick="verAsignacionesDeCupof('${esc(f[2]).replace(/'/g,"\\'")}');return false">${esc(f[2])}</a></td><td>${esc(f[3])}</td><td>${esc(c[ix('CUPOF','INSTRUMENTO')]||'')}</td><td>${esc(c[ix('CUPOF','FECHA')]||'')}</td><td>${carga}</td><td>${usado}</td><td${excedida?' style="color:#c00;font-weight:bold"':''}>${disp}${excedida?' ⚠':''}</td></tr>`;}).join('');})()}</table></div>
     <h3>Asignaciones en planes nuevos (${asg.length})</h3>
     <div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>DIV.</th><th>ESPACIO</th><th>HS PLAN</th><th>CUPOF ASIGNADA</th><th>HORAS</th></tr>${filasAsig}</table></div>`;
   } else if(repTab==='supl'){
@@ -1012,6 +1145,25 @@ function destinosDeDocente(docente,tiempo){
   });
   return{conTiempo,sueltas};
 }
+/** Agrupa items de destino (uno por fila de ASIGNACIONES) por curso+div+espacio, para el acta: el espacio
+ *  curricular debe aparecer UNA sola vez aunque esté financiado por más de una CUPOF (p.ej. dos parciales
+ *  de la misma reasignación). Cada CUPOF que lo compone queda como una fila propia debajo (rowspan sobre
+ *  curso/div/horas/situación/espacio), con su hs parcial en una columna aparte al final — la columna
+ *  "horas" del grupo muestra la carga oficial de la estructura curricular (caja), no el valor de cada CUPOF. */
+function agruparPorEspacio(items){
+  const grupos=[], pos={};
+  items.forEach(it=>{
+    const key=[it.plan,it.curso,it.div,it.espacio].join('||');
+    if(pos[key]===undefined){
+      pos[key]=grupos.length;
+      const planCorto=PLAN_MAP[it.plan]||it.plan;
+      const m=matchEspacio(it.espacio,cajaDe(planCorto,it.curso,true));
+      grupos.push({plan:it.plan,curso:it.curso,div:it.div,turno:it.turno,espacio:it.espacio,horasCaja:m?m.hs:'',items:[]});
+    }
+    grupos[pos[key]].items.push(it);
+  });
+  return grupos;
+}
 function actaHTML(docente){
   const d=filas('DOCENTES').find(f=>f[1]===docente)||['',docente];
   const dni=String(d[0]).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
@@ -1025,7 +1177,9 @@ function actaHTML(docente){
   const tratamiento=materia?`profesor/a de ${esc(materia)}`:'docente';
   const hsSueltas=sumHs(destSueltas);
   const filaOrigen=o=>`<tr><td>${esc(o.curso)}</td><td>${esc(o.div)}</td><td>${esc(o.carga)}</td><td>${esc(o.espacio)}/${esc(o.plan)}/${esc(sit)}/<span class="cup">${esc(o.cupofTxt)}</span></td></tr>`;
-  const filaDestino=r=>`<tr><td>${esc(r.curso)}</td><td>${esc(r.div)}</td><td>${esc(r.hs)}</td><td>${esc(sit)}</td><td>${esc(r.espacio)}</td><td class="cup">${esc(r.origen)}</td></tr>`;
+  const filaDestinoGrupo=g=>{const n=g.items.length;return g.items.map((it,j)=>`<tr>${j===0?
+    `<td rowspan="${n}">${esc(g.curso)}</td><td rowspan="${n}">${esc(g.div)}</td><td rowspan="${n}">${esc(g.horasCaja)}</td><td rowspan="${n}">${esc(sit)}</td><td rowspan="${n}">${esc(g.espacio)}</td>`:''}
+    <td class="cup">${esc(it.origen)}</td><td>${esc(it.hs)}</td></tr>`).join('');};
   const filaResumenTiempo=r=>`<tr><td class="cup">${esc(r.origen)}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td><td>${esc(r.turno||'')}</td></tr>`;
   const filaResumenSuelta=r=>`<tr><td class="cup">${r.origenes.map(o=>`${esc(o.texto)}${o.instrumento?'<br>'+esc(o.instrumento):''}`).join('<br>')}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td></tr>`;
 
@@ -1036,11 +1190,11 @@ function actaHTML(docente){
    <table><tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
    ${origSueltas.map(filaOrigen).join('')}</table>`:'';
   const aceptaTiempo=destConTiempo.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table><tr><th>curso</th><th>DIV</th><th>horas</th><th>Sit.de revista</th><th>Espacio Curricular actual</th><th>OBSERVACIONES</th></tr>
-   ${destConTiempo.map(filaDestino).join('')}</table>`:'';
+   <table><tr><th>curso</th><th>DIV</th><th>horas</th><th>Sit.de revista</th><th>Espacio Curricular actual</th><th>CUPOF</th><th>hs</th></tr>
+   ${agruparPorEspacio(destConTiempo).map(filaDestinoGrupo).join('')}</table>`:'';
   const aceptaSueltas=destSueltas.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table><tr><th>CURSO</th><th>DIV</th><th>CARGA HORA</th><th>SIT. REVISTA</th><th>Curso actual</th><th>OBSERVACIONES</th></tr>
-   ${destSueltas.map(filaDestino).join('')}</table>`:'';
+   <table><tr><th>CURSO</th><th>DIV</th><th>CARGA HORA</th><th>SIT. REVISTA</th><th>Curso actual</th><th>CUPOF</th><th>hs</th></tr>
+   ${agruparPorEspacio(destSueltas).map(filaDestinoGrupo).join('')}</table>`:'';
   const resumenTiempo=destConTiempo.length?`<table><tr><th>CUPOF:HISTÓRICAS</th><th>REASIGNADO EN</th><th>hs</th><th>curso</th><th>DIV</th><th>TURNO</th></tr>
    ${destConTiempo.map(filaResumenTiempo).join('')}</table>`:'';
   const resumenSueltas=destSueltas.length?`<p>Y la reasignación de ${numALetras(hsSueltas)} (${hsSueltas}) horas cátedra${destSueltas[0]?` al ${esc(destSueltas[0].plan)}`:''} ${RES_MARCO}</p>
