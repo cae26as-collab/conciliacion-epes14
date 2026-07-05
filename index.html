@@ -90,7 +90,7 @@ function msg(t,ms=3800){const m=document.getElementById('msg');m.textContent=t;m
 /* ============ INDICADOR DE PROGRESO / BLOQUEO DE BOTONES ============ */
 let BUSY=0;
 function setBusy(on){BUSY+=on?1:-1;if(BUSY<0)BUSY=0;const b=document.getElementById('busybar');if(b)b.style.display=BUSY>0?'block':'none';}
-/** Envuelve una acción (guardar/editar/borrar/generar): deshabilita a el elemento que la disparó
+/** Envuelve una acción (guardar/editar/borrar/generar): deshabilita el elemento que la disparó
  *  y muestra el indicador de progreso mientras corre, para evitar doble clic. */
 async function accion(el, fn){
   if(el){ el.dataset.orig=el.dataset.orig??el.innerHTML; el.style.pointerEvents='none'; el.style.opacity='.55'; if('disabled' in el) el.disabled=true; el.innerHTML='⏳ '+el.dataset.orig; }
@@ -186,6 +186,57 @@ function cajaDe(plan,curso,inclFuera){const iEp=ix('ESPACIOS','PLAN'),iEc=ix('ES
  *  siguen existiendo en la hoja CUPOF como registro, pero no deben sumar disponibilidad a nadie ni
  *  aparecer como opción para asignar horas nuevas. */
 function cupofDisponible(f){ const iEst=ix('CUPOF','ESTADO'); const est=iEst>-1?String(f[iEst]||'').trim():''; return !est||est==='Vigente'; }
+/* Excepción única admitida (error histórico del Ministerio, irresoluble — confirmado por el usuario):
+ * esta CUPOF tiene 2 docentes designados (Ayala Nazario y Moreira Iván René), cada uno con su carga
+ * completa por su lado — no es un excedido real aunque la suma de asignaciones de AMBOS duplique la
+ * carga nominal de la CUPOF. Global para poder reutilizarla tanto en calcularValidacion() (no reportarla
+ * como "excedida"/"doble designación") como en los reportes por docente (mostrar el uso PROPIO de cada
+ * uno, no el total compartido — ver usadoPropioEnCupof()). */
+const EXCEP_DOBLE=new Set([cupKey('0053200-PHC-EDUCFISI-5-I-MA-BOD-GH3')]);
+/** Para una CUPOF de la excepción de arriba, cuánto usa REALMENTE este docente puntual (por DNI/nombre,
+ *  vía asignacionesDelDocente), en vez del total compartido entre todos los que están designados en ella. */
+function usadoPropioEnCupof(cupTexto, docente){
+  const k=cupKey(cupTexto);
+  const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'), iAh=ix('ASIGNACIONES','HS');
+  return asignacionesDelDocente(docente).filter(({f})=>cupKey(f[iAcu])===k).reduce((a,{f})=>a+unNum(f[iAh]),0);
+}
+/* ============ HORAS REALMENTE A CARGO DE CADA DOCENTE (respeta suplencias por licencia) ============
+ * Confirmado por el usuario (05/07/2026, ajustado el mismo día): el titular/interino es el "dueño" real
+ * de la CUPOF y SIEMPRE computa sus horas asignadas, exista o no una suplente cubriéndolo — el cómputo
+ * del plan de estudios se hace sobre las horas titulares/interinas. Una designación SUPLENTE solo computa
+ * sus propias horas cuando es "huérfana" (sin ningún titular/interino detrás en esa misma CUPOF; son
+ * válidas y ya se contaban bien). Cuando hay suplente cubriendo a un titular/interino, esa cobertura se
+ * documenta aparte (columna OBS. de la planilla final — ver genPlanilla), no se le resta el crédito al
+ * titular/interino ni se le duplica a la suplente. */
+function cuposActivosDeDocente(docente){
+  const iDnom=ix('DESIGNACIONES','DOCENTE'), iDcup=ix('DESIGNACIONES','CUPOF'), iDsit=ix('DESIGNACIONES','SIT. REVISTA');
+  const desTodas=filas('DESIGNACIONES');
+  const cuposConTitularInterino=new Set();
+  desTodas.forEach(d=>{ const s=String(d[iDsit]||'').toUpperCase().trim(); if(s==='TITULAR'||s==='INTERINO') cuposConTitularInterino.add(cupKey(d[iDcup])); });
+  const activos=new Set();
+  desTodas.filter(d=>d[iDnom]===docente).forEach(d=>{
+    const k=cupKey(d[iDcup]); if(!k)return;
+    const situ=String(d[iDsit]||'').toUpperCase().trim();
+    const activo=situ==='SUPLENTE'?!cuposConTitularInterino.has(k):true;
+    if(activo)activos.add(k);
+  });
+  return activos;
+}
+/** Filas de ASIGNACIONES que hoy cuentan como de este docente (ver cuposActivosDeDocente): todas las de
+ *  sus cupof "activas", salvo en la única cupof con doble designación por error del Ministerio
+ *  (EXCEP_DOBLE), donde además se filtra por su propio nombre/DNI — ahí sí comparten literalmente el
+ *  mismo código de cupof con otra persona y hay que separar el uso de cada una. */
+function asignacionesActivasDeDocente(docente){
+  const activos=cuposActivosDeDocente(docente);
+  const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)');
+  const propias=asignacionesDelDocente(docente);
+  const propiosIdx=new Set(propias.map(({i})=>i));
+  return filas('ASIGNACIONES').map((f,i)=>({f,i})).filter(({f,i})=>{
+    const k=cupKey(f[iAcu]); if(!activos.has(k))return false;
+    if(EXCEP_DOBLE.has(k))return propiosIdx.has(i);
+    return true;
+  });
+}
 function cargasCupof(){ // key -> {carga, usado, docs:[docentes designados]}
   const m={};
   const iCa=ix('CUPOF','CARGA'), iCl=ix('CUPOF','CLASE');
@@ -675,7 +726,7 @@ function calcularValidacion(){
     if(!cupIdx[cupKey(f[2])])add('grave',`DESIGNACIONES fila ${i+2}: CUPOF ${f[2]} no existe`);
   });
   // Excepción única admitida (error histórico del Ministerio, irresoluble — confirmado por el usuario): no reportar
-  const EXCEP_DOBLE=new Set([cupKey('0053200-PHC-EDUCFISI-5-I-MA-BOD-GH3')]);
+  // (EXCEP_DOBLE ahora es global, ver definición junto a cupofDisponible/cargasCupof, reutilizada también en Reportes)
   const combo={};filas('DESIGNACIONES').forEach(f=>{const k=cupKey(f[2])+'|'+f[3];(combo[k]=combo[k]||[]).push(f[1]);});
   Object.entries(combo).forEach(([k,v2])=>{if(v2.length>1){const[c,s]=k.split('|');if(EXCEP_DOBLE.has(c))return;add('grave',`CUPOF ${c}: ${v2.length} docentes con la misma situación (${s}): ${v2.join(', ')}`);}});
   filas('TIEMPOS').forEach(t=>{
@@ -924,7 +975,7 @@ function balanceDocentes(){
   });
   return Object.values(m).filter(r=>r.nombre).map(r=>{
     const declarado=r1(r.titular+r.interino+r.suplente+r.otro);
-    const asignado=r1(asignacionesDelDocente(r.nombre).reduce((a,{f})=>a+unNum(f[iAh]),0));
+    const asignado=r1(asignacionesActivasDeDocente(r.nombre).reduce((a,{f})=>a+unNum(f[iAh]),0));
     const tsufs=[...r.sufijos].map(s=>tiemposIdx[s]).filter(Boolean);
     const tiempo=tsufs.length?tsufs.map(t=>`${t[iTt]||''} ${t[iTh]||''}hs`).join(' / '):'';
     return {nombre:r.nombre,dni:r.dni,titular:r1(r.titular),interino:r1(r.interino),suplente:r1(r.suplente),
@@ -938,7 +989,7 @@ function rReportes(){
   if(repTab==='docentes'){
     const docs=filas('DOCENTES').map(f=>f[1]).sort(); if(!repDoc)repDoc=docs[0]||'';
     const desg=filas('DESIGNACIONES').filter(f=>f[1]===repDoc);
-    const asg=asignacionesDelDocente(repDoc).map(x=>x.f);
+    const asg=asignacionesActivasDeDocente(repDoc).map(x=>x.f);
     // Mini resumen de horas del docente elegido, reutilizando el mismo cálculo que la pestaña "Balance por
     // docente" (mismas cifras, no se recalcula distinto acá para no tener dos criterios de lo mismo).
     const balDoc=balanceDocentes().find(r=>r.nombre===repDoc);
@@ -965,7 +1016,26 @@ function rReportes(){
     <h3>Designaciones (${desg.length})</h3>
     <p class="mini">Clic en una CUPOF para ver todas las asignaciones que cuentan contra ella (de cualquier docente) y controlar cuánto le queda disponible.</p>
     <div class="tabla-wrap"><table><tr><th>CUPOF</th><th>SITUACIÓN</th><th>INSTRUMENTO</th><th>FECHA</th><th>CARGA</th><th>USADO (todos)</th><th>DISPONIBLE</th></tr>
-    ${(()=>{const cargasIdx=cargasCupof();return desg.map(f=>{const c=cupIdx[cupKey(f[2])]||[];const cc=cargasIdx[cupKey(f[2])];const carga=cc?cc.carga:'';const usado=cc?cc.usado:'';const disp=cc?Math.round((cc.carga-cc.usado)*10)/10:'';const excedida=cc&&cc.usado>cc.carga;return `<tr><td class="cupofcell"><a href="#" onclick="verAsignacionesDeCupof('${esc(f[2]).replace(/'/g,"\\'")}');return false">${esc(f[2])}</a></td><td>${esc(f[3])}</td><td>${esc(c[ix('CUPOF','INSTRUMENTO')]||'')}</td><td>${esc(c[ix('CUPOF','FECHA')]||'')}</td><td>${carga}</td><td>${usado}</td><td${excedida?' style="color:#c00;font-weight:bold"':''}>${disp}${excedida?' ⚠':''}</td></tr>`;}).join('');})()}</table></div>
+    ${(()=>{const cargasIdx=cargasCupof();return desg.map(f=>{
+      const key=cupKey(f[2]); const c=cupIdx[key]||[]; const cc=cargasIdx[key]; const carga=cc?cc.carga:'';
+      const esExcepcion=cc&&EXCEP_DOBLE.has(key);
+      let usadoTxt,dispTxt,celdaDisp;
+      if(esExcepcion){
+        // Esta CUPOF tiene 2 docentes designados por un error histórico del Ministerio (ver EXCEP_DOBLE):
+        // "usado (todos)" sumaría a los dos juntos y daría un disponible negativo engañoso para cada uno.
+        // Acá se muestra el uso PROPIO de este docente puntual (no el total compartido con el otro).
+        const usadoPropio=usadoPropioEnCupof(f[2],repDoc);
+        const dispPropio=Math.round((cc.carga-usadoPropio)*10)/10;
+        usadoTxt=`${usadoPropio} (propio) · ${cc.usado} (compartido)`;
+        dispTxt=`${dispPropio} <span title="Esta CUPOF tiene 2 designaciones distintas por un error histórico del Ministerio, irresoluble — cada docente tiene su propia carga completa por su lado. No es un excedido real aunque el total compartido supere la carga nominal.">ⓘ</span>`;
+        celdaDisp=`<td>${dispTxt}</td>`;
+      } else {
+        const usado=cc?cc.usado:''; const disp=cc?Math.round((cc.carga-cc.usado)*10)/10:''; const excedida=cc&&cc.usado>cc.carga;
+        usadoTxt=usado;
+        celdaDisp=`<td${excedida?' style="color:#c00;font-weight:bold"':''}>${disp}${excedida?' ⚠':''}</td>`;
+      }
+      return `<tr><td class="cupofcell"><a href="#" onclick="verAsignacionesDeCupof('${esc(f[2]).replace(/'/g,"\\'")}');return false">${esc(f[2])}</a></td><td>${esc(f[3])}</td><td>${esc(c[ix('CUPOF','INSTRUMENTO')]||'')}</td><td>${esc(c[ix('CUPOF','FECHA')]||'')}</td><td>${carga}</td><td>${usadoTxt}</td>${celdaDisp}</tr>`;
+    }).join('');})()}</table></div>
     <h3>Asignaciones en planes nuevos (${asg.length})</h3>
     <div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>DIV.</th><th>ESPACIO</th><th>HS PLAN</th><th>CUPOF ASIGNADA</th><th>HORAS</th></tr>${filasAsig}</table></div>`;
   } else if(repTab==='supl'){
@@ -986,7 +1056,7 @@ function rReportes(){
     const BHD=['DOCENTE','DNI','TITULAR','INTERINO','SUPLENTE','TOTAL DECLARADO','ASIGNADO','DISPONIBLE','TIEMPO (PTP/PTC)'];
     const filasArr=bal.map(r=>[r.nombre,r.dni,r.titular,r.interino,r.suplente,r.declarado,r.asignado,r.disponible,r.tiempo]);
     filasArr.sort((a,b)=>{const x=a[ordBal.col],y=b[ordBal.col];const cmp=(typeof x==='number')?(x-y):(String(x)<String(y)?-1:String(x)>String(y)?1:0);return cmp*(ordBal.asc?1:-1);});
-    cuerpo=`<p class="mini">Horas declaradas (Titular+Interino+Suplente, según DESIGNACIONES y la carga real de cada CUPOF) vs. horas ya asignadas en el plan nuevo. "Disponible" ≠ 0 no siempre es un error — puede ser una licencia cubierta por un suplente, o simplemente falta terminar de asignar. Usalo como punto de partida para revisar, no como veredicto.</p>
+    cuerpo=`<p class="mini">Horas declaradas (Titular+Interino+Suplente, según DESIGNACIONES y la carga real de cada CUPOF) vs. horas que hoy están efectivamente a su cargo en el plan nuevo. Cuando una suplente cubre una licencia (Art.22/23/24), esas horas se cuentan para ELLA (aunque en ASIGNACIONES la fila siga a nombre del titular/interino) y NO para quien está de licencia — por eso alguien con una licencia larga puede mostrar "Disponible" alto sin ser un error: no es que falte asignarle, es que ahora mismo no está dictando esas horas. "Disponible" ≠ 0 también puede ser, simplemente, que falta terminar de asignar. Usalo como punto de partida para revisar, no como veredicto.</p>
     <div class="tabla-wrap"><table><tr>${BHD.map((h,i)=>`<th class="orden" onclick="ordBal={col:${i},asc:${ordBal.col===i?!ordBal.asc:true}};rReportes()">${h} ${ordBal.col===i?(ordBal.asc?'▲':'▼'):''}</th>`).join('')}</tr>
     ${filasArr.map(r=>`<tr${Math.abs(r[7])>0.01?' style="background:#fdf9ef"':''}><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${r[5]}</td><td>${r[6]}</td><td>${r[7]}</td><td>${esc(r[8])}</td></tr>`).join('')}</table></div>`;
   }
@@ -1047,7 +1117,10 @@ function genPlanilla(){
     const k=cupKey(f[0]);
     const tit=desg.filter(d=>cupKey(d[2])===k&&d[3]!=='SUPLENTE'),sup=desg.filter(d=>cupKey(d[2])===k&&d[3]==='SUPLENTE');
     const q=tit[0]||sup[0]||['','(SIN DESIGNACIÓN)','',''];
-    const obs=[sup.length&&tit.length?'Suplente: '+sup.map(x=>x[1]).join(', '):'',!tit.length&&sup.length?'Suplente sin titular/interino':''].filter(Boolean).join('. ');
+    // Si hay titular/interino Y suplente: el titular/interino sigue siendo "DOCENTE A CARGO" (arriba, q=tit[0]
+    // tiene prioridad) y las horas de esa cupof se computan sobre él/ella (ver cuposActivosDeDocente en
+    // balanceDocentes) — la suplente que la cubre se documenta acá, en OBSERVACIONES, con nombre+DNI+"(S)".
+    const obs=[sup.length&&tit.length?'Suplente: '+sup.map(x=>`${x[1]}, DNI ${x[0]} (S)`).join('; '):'',!tit.length&&sup.length?'Suplente sin titular/interino':''].filter(Boolean).join('. ');
     const dest=asg.filter(a=>cupKey(a[iAcu])===k).map(a=>`${a[iAp]} — ${a[iAe]} — ${a[iAc2]} (${a[iAh]} hs)`).join(' / ');
     h2.push([f[4],f[5],f[10]||'',f[11]||'',f[7],f[3],f[8],f[0],'',dest,q[1],q[3]||'',obs]);});
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h2),"HORAS QUE POSEE LA INSTITUCION");
