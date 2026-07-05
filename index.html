@@ -90,7 +90,7 @@ function msg(t,ms=3800){const m=document.getElementById('msg');m.textContent=t;m
 /* ============ INDICADOR DE PROGRESO / BLOQUEO DE BOTONES ============ */
 let BUSY=0;
 function setBusy(on){BUSY+=on?1:-1;if(BUSY<0)BUSY=0;const b=document.getElementById('busybar');if(b)b.style.display=BUSY>0?'block':'none';}
-/** Envuelve una acción (guardar/editar/borrar/generar): deshabilita el elemento que la disparó
+/** Envuelve una acción (guardar/editar/borrar/generar): deshabilita a el elemento que la disparó
  *  y muestra el indicador de progreso mientras corre, para evitar doble clic. */
 async function accion(el, fn){
   if(el){ el.dataset.orig=el.dataset.orig??el.innerHTML; el.style.pointerEvents='none'; el.style.opacity='.55'; if('disabled' in el) el.disabled=true; el.innerHTML='⏳ '+el.dataset.orig; }
