@@ -109,6 +109,18 @@ function unNum(v){const m=String(v??'').match(/\d+(?:[.,]\d+)?/);return m?parseF
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function deacc(s){return String(s??'').normalize('NFD').replace(/[̀-ͯ]/g,'');}
 function normE(s){return deacc(String(s??'')).toUpperCase().replace(/[^A-ZN0-9]/g,'');}
+/** Nombre canónico de un docente para MOSTRAR, a partir de una fila de ASIGNACIONES: si la fila tiene DNI
+ * completo, el nombre se resuelve SIEMPRE desde DOCENTES por DNI (nunca por el texto libre guardado en la
+ * columna DOCENTE), para evitar que el mismo docente aparezca distinto en filas distintas (ej. "Ariel" vs
+ * "Hector Ariel" para el mismo Céspedes). Si la fila todavía no tiene DNI cargado, devuelve el texto tal
+ * cual (compatibilidad mientras se completan los DNI faltantes — ver "DNI sin completar" en Validador). */
+function nombreAsigCanonico(f,iAdo,iAdni){
+  if(iAdni>-1&&f[iAdni]){
+    const dni=String(f[iAdni]).replace(/\D/g,'');
+    if(dni){const d=filas('DOCENTES').find(x=>String(x[0]).replace(/\D/g,'')===dni);if(d)return d[1];}
+  }
+  return f[iAdo]||'';
+}
 function cupKey(s){
   let x=deacc(String(s??'')).toUpperCase();
   x=x.replace(/\([^)]*\)/g,''); // quita anotaciones entre paréntesis
@@ -132,7 +144,7 @@ function cargaDesdeCupof(s){
   if(mFin)return Number(mFin[1]);
   return null;
 }
-/** Quita todo los espacios interno del texto de una CUPOF (no debe haber espacios entre guiones ni
+/** Quita todo espacio interno del texto de una CUPOF (no debe haber espacios entre guiones ni
  *  dentro del nombre del espacio curricular). No toca el separador entre varias CUPOF pegadas:
  *  usar SIEMPRE después de dividir, sobre una sola CUPOF por celda. */
 function compactarCupof(s){return String(s??'').replace(/\s+/g,'');}
@@ -308,7 +320,7 @@ function rConciliadorHoras(){
   const caja=cajaDe(selPlan,selCurso,true);
   const asigs=asigsDe(selPlan,selCurso,selDiv);
   const cargas=cargasCupof();
-  const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAo=ix('ASIGNACIONES','OBS.'),iAn=ix('ASIGNACIONES','N° PARCIAL');
+  const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAo=ix('ASIGNACIONES','OBS.'),iAn=ix('ASIGNACIONES','N° PARCIAL'),iAdni=ix('ASIGNACIONES','DNI');
   const porEsp={}; caja.forEach(c=>porEsp[c.n]=[]);
   const sinMatch=[];
   asigs.forEach(x=>{const m=matchEspacio(x.f[iAe],caja); if(m)porEsp[m.n].push(x); else sinMatch.push(x);});
@@ -327,10 +339,10 @@ function rConciliadorHoras(){
     lst.forEach(({f,i},pos)=>{
       const esVac=!cupKey(f[iAcu]);
       // docente una sola vez por corrida consecutiva
-      const mismoDocAntes=pos>0&&lst[pos-1].f[iAdo]===f[iAdo]&&!esVac&&editIdx!==i&&editIdx!==lst[pos-1].i;
-      let corr=1; if(!mismoDocAntes){for(let q=pos+1;q<lst.length;q++){if(lst[q].f[iAdo]===f[iAdo]&&editIdx!==lst[q].i&&cupKey(lst[q].f[iAcu]))corr++;else break;}}
+      const mismoDocAntes=pos>0&&nombreAsigCanonico(lst[pos-1].f,iAdo,iAdni)===nombreAsigCanonico(f,iAdo,iAdni)&&!esVac&&editIdx!==i&&editIdx!==lst[pos-1].i;
+      let corr=1; if(!mismoDocAntes){for(let q=pos+1;q<lst.length;q++){if(nombreAsigCanonico(lst[q].f,iAdo,iAdni)===nombreAsigCanonico(f,iAdo,iAdni)&&editIdx!==lst[q].i&&cupKey(lst[q].f[iAcu]))corr++;else break;}}
       if(editIdx===i&&ROL==='admin'){
-        const docSel=editDoc||f[iAdo];
+        const docSel=editDoc||nombreAsigCanonico(f,iAdo,iAdni);
         html+=`<tr>${primera?`<td class="esp" rowspan="${nfilas}">${esc(c.nom)}</td><td rowspan="${nfilas}">${c.hs}</td>`:''}
          <td><select onchange="editDoc=this.value;rConciliador()">${docentes.map(d2=>`<option ${d2===docSel?'selected':''}>${esc(d2)}</option>`).join('')}</select></td>
          <td>${cupofSelect(docSel,cargas,f[iAcu])}</td>
@@ -343,7 +355,7 @@ function rConciliadorHoras(){
          <td>${primera?est:''} ${ROL==='admin'?`<a href="#" onclick="editIdx=${i};editDoc='';addEsp=null;rConciliador();return false" title="editar">✎</a> <a href="#" onclick="accion(this,()=>quitarAsig(${i}));return false" title="quitar">🗑</a>`:''}</td></tr>`;
       } else {
         html+=`<tr>${primera?`<td class="esp" rowspan="${nfilas}">${esc(c.nom)}</td><td rowspan="${nfilas}">${c.hs}</td>`:''}
-         ${mismoDocAntes?'':`<td rowspan="${corr}">${esc(f[iAdo])}</td>`}<td class="cupofcell">${esc(f[iAcu])}${iAn>-1&&f[iAn]?` <span class="pill info">${esc((f[iAn].match(/P\d+$/)||[''])[0])}</span>`:''}${f[iAo]?` <span class="mini">(${esc(f[iAo])})</span>`:''}</td>
+         ${mismoDocAntes?'':`<td rowspan="${corr}">${esc(nombreAsigCanonico(f,iAdo,iAdni))}</td>`}<td class="cupofcell">${esc(f[iAcu])}${iAn>-1&&f[iAn]?` <span class="pill info">${esc((f[iAn].match(/P\d+$/)||[''])[0])}</span>`:''}${f[iAo]?` <span class="mini">(${esc(f[iAo])})</span>`:''}</td>
          <td>${esc(f[iAh])}</td>
          <td>${primera?est:''} ${ROL==='admin'?`<a href="#" onclick="editIdx=${i};editDoc='';addEsp=null;rConciliador();return false" title="editar">✎</a> <a href="#" onclick="accion(this,()=>quitarAsig(${i}));return false" title="quitar">🗑</a>`:''}</td></tr>`;
       }
@@ -534,9 +546,11 @@ async function sincronizarTodosLosParciales(){
 }
 async function guardarEdicion(i,espN){
   const f=BD['ASIGNACIONES'].filas[i];
-  const iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO');
+  const iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAdni=ix('ASIGNACIONES','DNI');
   const sel=document.getElementById('edCup'); if(!sel)return msg('Elegí una CUPOF');
-  const cup=sel.value, doc=editDoc||f[iAdo];
+  // al guardar (aunque no se haya tocado el docente) se reescribe siempre el nombre canónico por DNI,
+  // para ir normalizando de a poco los nombres inconsistentes guardados históricamente en esta columna.
+  const cup=sel.value, doc=editDoc||nombreAsigCanonico(f,iAdo,iAdni);
   let hs=parseFloat(document.getElementById('edHs').value)||0;
   const caja=cajaDe(selPlan,selCurso,true); const c=caja.find(x=>x.n===espN);
   const cargas=cargasCupof();
@@ -1235,12 +1249,12 @@ function calcularValidacion(){
     });
   }
   return {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
-    iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,HD};
+    iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,iAdniAud,HD};
 }
 function rValidador(){
   const v=document.getElementById('v-validador');
   const {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
-    iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,HD}=calcularValidacion();
+    iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,iAdniAud,HD}=calcularValidacion();
   v.innerHTML=`<div class="card"><h2>Validador</h2>
    <div class="fila" style="margin-bottom:8px">
     <p class="mini" style="margin:0">${problemas.length} observaciones · ${sinUsar.length} CUPOF con horas disponibles</p>
@@ -1257,14 +1271,14 @@ function rValidador(){
     ${excedidas.map(e=>`<tr><td>${esc(e.plan)}</td><td>${esc(e.esp)}</td><td class="cupofcell">${esc(e.cup)}</td><td>${e.usado}</td><td>${e.carga}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
    <p style="font-weight:bold;margin:14px 0 4px">Asignaciones cuya clave no matchea ninguna CUPOF de horas — huérfanas (${huerfanas.length})</p>
    ${huerfanas.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>CUPOF (texto origen)</th><th></th></tr>
-    ${huerfanas.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(f[iAdoAud])}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
+    ${huerfanas.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(nombreAsigCanonico(f,iAdoAud,iAdniAud))}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
      <td>${ROL==='admin'?`<a href="#" onclick="editarFila('ASIGNACIONES',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>
   <div class="card"><h3>Asignaciones sin designación real en esa CUPOF (${sinDesigReal.length})</h3>
    <p class="mini">Para cada asignación con DNI completo, se busca si ese docente (por DNI) tiene alguna DESIGNACIONES en esa misma CUPOF. Si no la tiene, la asociación cupof↔docente puede estar mal hecha (por ejemplo, por apellido en vez de DNI, cuando hay dos docentes con el mismo apellido). Esto solo reporta — la corrección se hace a mano en Datos.</p>
    ${ix('ASIGNACIONES','DNI')===-1?`<p class="mini">Todavía no existe la columna DNI en ASIGNACIONES: correr <b>agregarColumnaDniAsignaciones()</b> una vez desde Apps Script para habilitar esta sección.</p>`:
    sinDesigReal.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>CUPOF (texto origen)</th><th></th></tr>
-    ${sinDesigReal.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(f[iAdoAud])}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
+    ${sinDesigReal.map(({f,i})=>`<tr><td>${esc(f[iApAud])}</td><td>${esc(f[iAcAud])}</td><td>${esc(f[iAeAud])}</td><td>${esc(nombreAsigCanonico(f,iAdoAud,iAdniAud))}</td><td>${esc(f[iAhAud])}</td><td class="cupofcell">${esc(f[iAcuAud]).slice(0,70)}</td>
      <td>${ROL==='admin'?`<a href="#" onclick="editarFila('ASIGNACIONES',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>
   <div class="card"><h3>CARGA en blanco (0) — se puede completar con lo que indica el texto</h3>
@@ -1303,7 +1317,7 @@ function rValidador(){
 function verAsignacionesDeCupof(cupofTxt){
   const k=cupKey(cupofTxt);
   const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAp=ix('ASIGNACIONES','PLAN DESTINO'),iAc=ix('ASIGNACIONES','CURSO'),
-        iAd=ix('ASIGNACIONES','DIV.'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAdo=ix('ASIGNACIONES','DOCENTE');
+        iAd=ix('ASIGNACIONES','DIV.'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAdni=ix('ASIGNACIONES','DNI');
   const encontradas=filas('ASIGNACIONES').filter(f=>cupKey(f[iAcu])===k);
   const cc=cargasCupof()[k];
   const carga=cc?cc.carga:null, usado=cc?cc.usado:encontradas.reduce((a,f)=>a+hsNum(f[iAh]),0);
@@ -1315,7 +1329,7 @@ function verAsignacionesDeCupof(cupofTxt){
    <p class="cupofcell">${esc(cupofTxt)}</p>
    ${carga!=null?`<p><b>CARGA:</b> ${carga} &nbsp; <b>USADO:</b> ${usado} &nbsp; <b>DISPONIBLE:</b> <span${excedida?' style="color:#c00;font-weight:bold"':''}>${disp}${excedida?' ⚠ EXCEDIDA':''}</span></p>`:'<p class="mini">Esta CUPOF no figura en la hoja CUPOF (o no es de clase "Horas") — no tiene carga nominal contra la cual comparar.</p>'}
    ${encontradas.length?`<div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO</th><th>DIV.</th><th>ESPACIO</th><th>DOCENTE</th><th>HS</th><th>TEXTO ORIGEN (tal cual guardado)</th></tr>
-    ${encontradas.map(f=>`<tr><td>${esc(f[iAp])}</td><td>${esc(f[iAc])}</td><td>${esc(f[iAd])}</td><td>${esc(f[iAe])}</td><td>${esc(f[iAdo])}</td><td>${esc(f[iAh])}</td><td class="cupofcell">${esc(f[iAcu])}</td></tr>`).join('')}</table></div>`
+    ${encontradas.map(f=>`<tr><td>${esc(f[iAp])}</td><td>${esc(f[iAc])}</td><td>${esc(f[iAd])}</td><td>${esc(f[iAe])}</td><td>${esc(nombreAsigCanonico(f,iAdo,iAdni))}</td><td>${esc(f[iAh])}</td><td class="cupofcell">${esc(f[iAcu])}</td></tr>`).join('')}</table></div>`
     :'<p class="mini">Ninguna asignación cuenta contra esta CUPOF todavía — el saldo disponible debería ser igual a la carga total.</p>'}
    <div class="fila" style="margin-top:10px"><button class="b sec" onclick="dlg.close()">Cerrar</button></div>`;
   d.showModal();
@@ -1528,16 +1542,19 @@ function genPlanilla(){
     if(!confirm(resumen+'\n\n¿Generar la planilla igual? (revisá la pestaña Validador antes de enviarla a la DES)'))return;
   }
   const wb=XLSX.utils.book_new();
-  // Hoja 1: igual a la del modelo oficial (6 columnas, con fila de numeración)
-  const h1=[["(1)","(2)","(3)","(4)","(5)","(6)"],
+  // Hoja 1: igual a la del modelo oficial (6 columnas, con fila de numeración). El modelo trae 7 filas en
+  // blanco (encabezado institucional/carátula) antes de la fila de numeración — se respeta esa posición
+  // (fila 8-9) para que coincida con el modelo (validado contra "PLANILLA Conciliacion 1ER ETAPA.xlsx" 06/07/2026).
+  const h1=[[],[],[],[],[],[],[],["(1)","(2)","(3)","(4)","(5)","(6)"],
     ["CURSO","DIVISIÓN","PLAN DE ESTUDIO","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO LEGAL","CARGA HORARIA\n(expresar en valores numéricos)"]];
   filas('CURSOS').forEach(f=>{
     const instr=f[4]||f[6]||'',fecha=(f[4]?f[5]:f[7])||'';
     const caja=filas('ESPACIOS').filter(e=>e[0]===f[0]&&String(e[1])===String(f[1])&&e[4]!=='Sí').reduce((a,e)=>a+unNum(e[3]),0);
     h1.push([f[1],f[2],f[0],instr,fecha,caja||'']);});
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h1),"INSTRUMENTOS DE CREACIÓN");
-  // Hoja 2: 13 columnas del modelo oficial (antes faltaba "ADECUACIÓN A LA EGB3/POLIMODAL" como columna aparte)
-  const h2=[["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],
+  // Hoja 2: 13 columnas del modelo oficial (antes faltaba "ADECUACIÓN A LA EGB3/POLIMODAL" como columna aparte).
+  // El modelo trae 1 fila en blanco antes de la fila de numeración (fila 2-3) — se respeta esa posición.
+  const h2=[[],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],
     ["CURSO","DIVISION","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","ESPACIO CURRICULAR","CARGA HORARIA\n(expresar en valores numéricos)","CUPOF\n(incluir todas las CUPOF habilitadas por el instrumento legal)",
      "ADECUACIÓN A LA EGB3/POLIMODAL","ADECUACIÓN A LA RESOLUCIÓN N° 672/19 MCyE y RESOL N°……MCyE BACHILLER EN…","DOCENTE A CARGO","SITUACIÓN REVISTA","OBSERVACIONES\n(En Actividad, Lic. Art 22, 23, 24, UT, etc)"]];
   const desg=filas('DESIGNACIONES'),asg=filas('ASIGNACIONES');
@@ -1553,32 +1570,54 @@ function genPlanilla(){
     const dest=asg.filter(a=>cupKey(a[iAcu])===k).map(a=>`${a[iAp]} — ${a[iAe]} — ${a[iAc2]} (${a[iAh]} hs)`).join(' / ');
     h2.push([f[4],f[5],f[10]||'',f[11]||'',f[7],f[3],f[8],f[0],'',dest,q[1],q[3]||'',obs]);});
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h2),"HORAS QUE POSEE LA INSTITUCION");
-  // Hoja 3: 11 columnas oficiales de DETALLE DE CARGOS + 4 extra útiles al final (ocupante/situación/suplente/obs,
-  // que el modelo oficial no pide como columna propia pero sí conviene conservar). Plan/CUPOF/Área/Espacios/Curso/
-  // División/Adecuación quedan en blanco: la hoja CARGOS de la base no tiene esos datos vinculados (pendiente de dato).
+  // Hoja 3: 11 columnas oficiales de DETALLE DE CARGOS + 3 extra útiles al final (Titular/Interino, Sit.
+  // Revista, Suplente, Observaciones — no las pide el modelo oficial como columna propia pero conviene
+  // conservarlas). Se leen las columnas de CARGOS por NOMBRE (ix), no por posición fija, para no romperse
+  // si se agregan/reordenan columnas (p.ej. la columna CUPOF, agregada 05/07/2026 por
+  // agregarColumnaCupofCargos() — ahora si alimenta "CUPOF QUE CUBRE EL CARGO", antes quedaba en blanco).
   const h3=[["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)"],
     ["CARGO","N° DE CARGO","INSTRUMENTO LEGAL DE CREACIÓN (del cargo)","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","CUPOF QUE CUBRE EL CARGO","ÁREA","ESPACIOS CURRICULARES (CUPOF)","CURSO","DIVISIÓN",
-     "ADECUACIÓN A LA RESOLUCIÓN N° 672/19 Y RESOL N°….MCyE BACHILLER EN…..","OCUPANTE 2026","SIT. REVISTA","SUPLENTE","OBSERVACIONES"]];
-  filas('CARGOS').forEach(f=>h3.push(['','','','','','','','','','','','','','',''].map((_,j)=>
-    ({0:f[0],1:f[2],2:f[3],3:f[4],11:f[5],12:f[6],13:f[7],14:f[8]}[j]??''))));
+     "ADECUACIÓN A LA RESOLUCIÓN N° 672/19 Y RESOL N°….MCyE BACHILLER EN…..","Titular/Interino","SIT. REVISTA","SUPLENTE","OBSERVACIONES"]];
+  {
+    const cCarg=ix('CARGOS','CARGO'),cN=ix('CARGOS','N°'),cCup=ix('CARGOS','CUPOF'),cInst=ix('CARGOS','INSTRUMENTO'),
+          cFec=ix('CARGOS','FECHA CREACIÓN'),cOcu=ix('CARGOS','OCUPANTE 2026'),cSit=ix('CARGOS','SIT. REVISTA'),
+          cSup=ix('CARGOS','SUPLENTE'),cObs=ix('CARGOS','OBSERVACIONES');
+    const g=(f,idx)=>idx>-1?(f[idx]??''):'';
+    filas('CARGOS').forEach(f=>h3.push([g(f,cCarg),g(f,cN),g(f,cInst),g(f,cFec),'',g(f,cCup),'','','','','',g(f,cOcu),g(f,cSit),g(f,cSup),g(f,cObs)]));
+  }
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h3),"DETALLE DE CARGOS ");
-  const h4=[["AREA","CARGO \n(PTP 12 - PTP 18 - PTP 24 - PTP 30 PTC 36)","ESPACIOS CURRICULARES QUE SE VAN ASIGNAR A ESOS CARGOS","CARGA HORARIA DEL ESPACIO CURRICULAR","","ESPACIOS CURRICULARES DE HORAS SUELTAS PARA COMPLETAR LA CAJA CURRICULAR","HORAS CATEDRAS"]];
+  // Hoja 4: el modelo trae una fila de numeración (1)(2)(3)(4),(5)(6) antes de los encabezados (columna 5 sin número).
+  const h4=[["(1)","(2)","(3)","(4)","","(5)","(6)"],
+    ["AREA","CARGO \n(PTP 12 - PTP 18 - PTP 24 - PTP 30 PTC 36)","ESPACIOS CURRICULARES QUE SE VAN ASIGNAR A ESOS CARGOS","CARGA HORARIA DEL ESPACIO CURRICULAR","","ESPACIOS CURRICULARES DE HORAS SUELTAS PARA COMPLETAR LA CAJA CURRICULAR","HORAS CATEDRAS"]];
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h4),"PROPUESTA DE CREACION DE CARGOS");
   XLSX.writeFile(wb,"PLANILLA Conciliacion 1ER ETAPA - EPES14.xlsx");msg('Planilla generada');
 }
-const ACTA_CSS=`body{font-family:Arial;font-size:10.5pt;margin:24px}h1{text-align:center;font-size:13pt}
+/* Márgenes, fuente y sangrías tomados de modelo_disposición.doc (agregado por la usuaria 06/07/2026):
+ * página Oficio/Legal 215.9mm x 355.6mm, márgenes sup/inf 25mm, izq/der 30mm; fuente Arial 12pt en todo
+ * el cuerpo. Sangrías: .actap (Actas) 1cm de primera línea; .consid (VISTO/CONSIDERANDO del detalle de la
+ * Disposición) 2.75cm de primera línea, igual que el modelo; .artic (cada Artículo) sangría francesa de
+ * 3cm (la línea del encabezado del artículo arranca sin sangría y, si el texto pasa a una 2da línea, esa
+ * línea queda sangrada 3cm, igual que en el modelo). */
+const ACTA_CSS=`@page{size:215.9mm 355.6mm;margin:25mm 30mm}
+body{font-family:Arial,sans-serif;font-size:12pt;margin:24px}h1{text-align:center;font-size:14pt}
 table{border-collapse:collapse;width:100%;margin:8px 0}
 th{background:#d9d9d9;color:#000;border:1px solid #777;padding:3px 5px;font-size:8.5pt;white-space:nowrap}
 td{border:1px solid #777;padding:3px 5px;font-size:8.5pt}
 td.cup{font-size:7.5pt;white-space:nowrap;font-family:Consolas,monospace}
 .tiempoHead{background:#e8e8e8;font-weight:bold;text-align:center;padding:4px;border:1px solid #777;margin:10px 0 0}
-p{text-align:justify;margin:7px 0}.salto{page-break-before:always}`;
+p{text-align:justify;margin:7px 0}.salto{page-break-before:always}
+.actap{text-indent:1cm}
+.consid{text-indent:2.75cm}
+.artic{margin-left:3cm;text-indent:-3cm}
+.hdr{font-weight:bold}`;
 /* Constantes legales fijas del modelo (Res. de la reforma, marco legal, localidad, firma). Se repiten
  * igual en toda acta — si en algún momento cambian, se actualizan acá una sola vez. */
 const LOCALIDAD='Comandante Fontana';
 const LEY_MARCO='la Ley 26.206 (LEN) y la Ley N° 1613 Ley General de Educación de la provincia de Formosa';
 const RES_MARCO='Res. 672/19 - 3492/16 - 662/19 - 664/19 - 3104/03';
-const DIRECTORA='LA DIRECTORA DE LA EPES Nº 14';
+const DIRECTORA='LA DIRECTORA DE LA E.P.E.S. N° 14';
+const ESCUELA_APODO='“Tte. Cnel. Fco. Magín Guerrero”';
+const DIRECTORA_NOMBRE='Prof. Marega, Mirian Patricia';
 const NUM_PALABRAS=['cero','uno','dos','tres','cuatro','cinco','seis','siete','ocho','nueve','diez','once','doce','trece','catorce','quince','dieciséis','diecisiete','dieciocho','diecinueve','veinte'];
 function numALetras(n){n=Math.round(n);return(n>=0&&n<=20)?NUM_PALABRAS[n]:String(n);}
 function sumHs(rows){return rows.reduce((a,r)=>a+hsNum(r.hs),0);}
@@ -1704,24 +1743,29 @@ function actaHTML(docente){
    ${destSueltas.map(filaResumenSuelta).join('')}</table>`:'';
 
   return `<h1>ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES</h1>
-  <p>En la localidad de ${LOCALIDAD} a los ………. días del mes de ${esc(fecha)}, comparece en la Dirección de la EPES Nº 14 el/la ${tratamiento} <b>${esc(docente)}</b>, DNI N°: <b>${dni}</b>, quien acepta, en el marco de ${LEY_MARCO}, desempeñarse desde la toma de posesión en las horas reubicadas, con una propuesta pedagógica enmarcada en los objetivos establecidos en la ${RES_MARCO}, en los siguientes espacios curriculares:</p>
+  <p class="actap">En la localidad de ${LOCALIDAD} a los ………. días del mes de ${esc(fecha)}, comparece en la Dirección de la EPES Nº 14 el/la ${tratamiento} <b>${esc(docente)}</b>, DNI N°: <b>${dni}</b>, quien acepta, en el marco de ${LEY_MARCO}, desempeñarse desde la toma de posesión en las horas reubicadas, con una propuesta pedagógica enmarcada en los objetivos establecidos en la ${RES_MARCO}, en los siguientes espacios curriculares:</p>
   ${bloqueTiempo}${bloqueSueltas}${aceptaTiempo}${aceptaSueltas}
   <p class="salto"></p>
   <p style="text-align:right"><b>${LOCALIDAD}</b></p>
-  <p><b>VISTO: </b>La necesidad de reorganizar la POF de la escuela, y reasignar horas de los CUPOF y las plazas correspondientes, a la estructura curricular vigente por ${RES_MARCO}; y</p>
-  <p><b>CONSIDERANDO:</b></p>
-  <p>Que es necesario reasignar los CUPOF y las plazas a la nueva estructura curricular aprobada por ${RES_MARCO}.</p>
-  <p>Que la misma se procederá a realizar por medio de Actas de Acuerdo y Disposiciones AD referéndum de la Dirección de Nivel Secundario a través de las cuales el/la docente acepta la reubicación de las horas cátedra en que se encontraba designado/a, a las vigentes según el Plan de estudios contemplado en la resolución citada en el visto;</p>
-  <p>Que por este instrumento legal se validará la reasignación ${tiempo?`del ${esc(tiempo.tipo)} ${esc(tiempo.hs)} hs.`:'de horas cátedra'} del/de la ${tratamiento} <b>${esc(docente)}</b> -DNI N°: ${dni} a horas cátedras del Plan de estudios vigente.</p>
-  <p>Que corresponde dictar el acto administrativo pertinente que efectivice la medida tomada;</p>
-  <p>Por ello;</p>
+  <p class="hdr">VISTO</p>
+  <p class="consid">La necesidad de reorganizar la POF de la escuela, y reasignar horas de los CUPOF y las plazas correspondientes, a la estructura curricular vigente por ${RES_MARCO}; y</p>
+  <p class="hdr">CONSIDERANDO:</p>
+  <p class="consid">Que es necesario reasignar los CUPOF y las plazas a la nueva estructura curricular aprobada por ${RES_MARCO}.</p>
+  <p class="consid">Que la misma se procederá a realizar por medio de Actas de Acuerdo y Disposiciones AD referéndum de la Dirección de Nivel Secundario a través de las cuales el/la docente acepta la reubicación de las horas cátedra en que se encontraba designado/a, a las vigentes según el Plan de estudios contemplado en la resolución citada en el visto;</p>
+  <p class="consid">Que por este instrumento legal se validará la reasignación ${tiempo?`del ${esc(tiempo.tipo)} ${esc(tiempo.hs)} hs.`:'de horas cátedra'} del/de la ${tratamiento} <b>${esc(docente)}</b> -DNI N°: ${dni} a horas cátedras del Plan de estudios vigente.</p>
+  <p class="consid">Que corresponde dictar el acto administrativo pertinente que efectivice la medida tomada;</p>
+  <p class="consid">Por ello;</p>
   <p style="text-align:center;font-weight:bold">${DIRECTORA}</p>
-  <p style="text-align:center;font-weight:bold">DISPONE:</p>
-  <p><b>ARTICULO 1º:</b> Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${tiempo?`del ${esc(tiempo.tipo)} de ${esc(tiempo.hs)} hs.`:'de horas cátedra'} del/de la ${tratamiento} <b>${esc(docente)}</b> -DNI N°: ${dni} según se detalla:</p>
+  <p style="text-align:center;font-weight:bold">${ESCUELA_APODO}</p>
+  <p style="text-align:center;font-weight:bold">${DIRECTORA_NOMBRE}</p>
+  <p style="text-align:center;font-weight:bold">DISPONE</p>
+  <p class="artic"><b>ARTICULO 1º:</b> Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${tiempo?`del ${esc(tiempo.tipo)} de ${esc(tiempo.hs)} hs.`:'de horas cátedra'} del/de la ${tratamiento} <b>${esc(docente)}</b> -DNI N°: ${dni} según se detalla:</p>
   ${resumenTiempo}${resumenSueltas}
   <p>-SUJETO A APLICACIÓN DE ART. 21-</p>
-  <p><b>ARTICULO 2º:</b> Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.</p>
+  <p class="artic"><b>ARTICULO 2º:</b> Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.</p>
+  <p>&nbsp;</p>
   <p>DISPOSICIÓN Nº _________/</p>
+  <p>&nbsp;</p>
   <p>NOTIFICADO: …………………………………………………</p>`;
 }
 function envolver(cuerpo){return `<html><head><meta charset="utf-8"><style>${ACTA_CSS}</style></head><body>${cuerpo}</body></html>`;}
@@ -1729,7 +1773,8 @@ function bajarDoc(nombre,html){const a=document.createElement('a');a.href=URL.cr
 function bajarPDF(nombre,html){
   if(typeof html2pdf==='undefined')return msg('No cargó la librería de PDF');
   const el=document.createElement('div');el.innerHTML=`<style>${ACTA_CSS}</style>`+html;
-  html2pdf().set({filename:nombre,margin:[10,10],jsPDF:{unit:'mm',format:'a4'},html2canvas:{scale:2}}).from(el).save();
+  // Formato y márgenes según modelo_disposición.doc: página Oficio/Legal (215.9x355.6mm), márgenes 25mm sup/inf, 30mm izq/der.
+  html2pdf().set({filename:nombre,margin:[25,30,25,30],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2}}).from(el).save();
 }
 function docentesConDestino(){
   return filas('DOCENTES').map(f=>f[1]).filter(n=>asignacionesDelDocente(n).length>0).sort();
