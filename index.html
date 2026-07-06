@@ -571,7 +571,6 @@ async function guardarEdicion(i,espN){
     if(hs<=0)return msg('Sin horas disponibles');
   }
   const nuevos=f.slice(); nuevos[iAcu]=cup; nuevos[iAdo]=doc; nuevos[iAh]=String(hs); nuevos[iAe]=c?c.nom:f[iAe];
-  const iAdni=ix('ASIGNACIONES','DNI');
   if(iAdni>-1){const docRow=filas('DOCENTES').find(x=>x[1]===doc); nuevos[iAdni]=docRow?docRow[0]:'';}
   const claveVieja=cupKey(f[iAcu]), claveNueva=cupKey(cup);
   try{await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:i+1,valores:nuevos});BD['ASIGNACIONES'].filas[i]=nuevos;editIdx=null;editDoc='';
