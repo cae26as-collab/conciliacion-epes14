@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Conciliación POF — EPES N° 14</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style/dist/xlsx.bundle.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <style>
 :root { --azul:#1F4E78; --azul2:#2E75B6; --gris:#f4f6f8; --borde:#d0d7de; --rojo:#c0392b; --verde:#1e8449; --amar:#b9770e; }
@@ -1527,6 +1527,68 @@ function rGenerar(){
     <button class="b sec" onclick="accion(this,()=>genActasTodas('doc'))">TODAS en Word</button>
     <button class="b sec" onclick="accion(this,()=>genActasTodas('pdf'))">TODAS en PDF</button></div></div>`;
 }
+/* ============ PLANILLA OFICIAL: helpers de formato y de nombres completos (agregado 06/07/2026) ============ */
+const INSTITUCION_HEADER='EPES N° 14 "Tte. Cnel. Francisco Magín Guerrero" - CUE: 3400532-00 - Comandante Fontana';
+/** Código de espacio curricular (tal como aparece en el texto de la CUPOF) -> nombre completo, lista dada
+ *  por la usuaria 06/07/2026. Si un código no está en esta lista, se muestra tal cual (para no ocultar
+ *  datos) — conviene avisar para completar la lista si aparece alguno nuevo. */
+const ESPACIO_NOMBRES={
+  ADMIEMPR:'Administración de Empresas', ADMPERPLL:'Administración de Personal y Práctica Laboral',
+  APREMUSI:'Apreciación Musical', BIOL1:'Biología 1', BIOL2:'Biología 2', BIOLOGIA:'Biología',
+  COMUNICA:'Comunicación', CONTABIL:'Contabilidad', CSBIOL:'Ciencias Biológicas', CSFISQU:'Ciencias Físico-Química',
+  CULTCOMU:'Cultura y Comunicación', DERECHO:'Derecho', DIAGESTR:'Diagramación Estructurada', ECONOMIA:'Economía',
+  EDI:'EDI', 'EDI:A':'EDI:A', 'EDI:B':'EDI:B', EDUCCIVI:'Educación Cívica', EDUCFISI:'Educación Física',
+  EDUCMUSI:'Educación Musical', EDUCPLAS:'Educación Plática', EDUFIS1:'Educación Física 1', EDUFIS2:'Educación Física 2',
+  EDUFIS3:'Educación Física 3', ESTADIST:'Estadística', FILOSOFI:'Filosofía', FINANZAS:'Finanzas',
+  FISI1:'Física 1', FISI2:'Física 2', FISIASTR:'Física y Astronomía', FISICA:'Física',
+  FORETICI:'Formación Ética y Ciudadana', FUNDEDUC:'Fundamentos de la Educación', GEOGRAFI:'Geografía', HISTORIA:'Historia',
+  INGLES:'Inglés', INTDERFC:'Introducción al Derecho y Formación Cívica', INTRCOMP:'Introducción a la Computación',
+  LAC:'Lenguaje Artístico Comunicacional', LEGLABPI:'Legislación Laboral y Práctica Impositiva',
+  LENARTCO:'Lenguaje Artístico Comunicacional', LENEXT1:'Lengua Extranjera 1', LENEXT2:'Lengua Extranjera 2',
+  LENEXT3:'Lengua Extranjera 3', LENGEXTR:'Lengua Extranjera', LENGLITE:'Lengua y Literatura', LENGUA:'Lengua',
+  LENLIT1:'Lengua y Literatura 1', LENLIT2:'Lengua y Literatura 2', LENLIT3:'Lengua y Literatura 3',
+  LOGMETCS:'Lógica y Metodología de las Ciencias', MATE1:'Matemática 1', MATE2:'Matemática 2', MATEAPLI:'Matemática Aplicada',
+  MATEMATI:'Matemática', MECANOGR:'Mecanografía', NING:'“-”', OPCIINST:'Opción Institucional', PLASTICA:'Plástica',
+  PRODAT1:'Procesamiento de Datos 1', PRODAT2:'Procesamiento de Datos 2', PROGRAMA:'Programación',
+  PROINVISC:'Proyecto de Investigación e Intervención Sociocomunitario', PSICEDUC:'Psicología Educacional',
+  PSICGENE:'Psicología General', PSICOLOG:'Psicología', QUIM1:'Química 1', QUIM2:'Química 2', QUIMICA:'Química',
+  SALUD:'Salud', TECNGEST:'Tecnología de Gestión', TECNMERC:'Tecnología Mercantil', TECNOLOG:'Tecnología.'
+};
+function nombreEspacio(codigo){ const c=String(codigo||'').toUpperCase().trim(); return ESPACIO_NOMBRES[c]||codigo||''; }
+/** Sigla de PLANES (o de CUPOF.PLAN/CURSOS.PLAN, que usan la misma sigla) -> "Nombre completo (SIGLA)",
+ *  buscando en la hoja PLANES. Si no encuentra la sigla, devuelve el texto tal cual. */
+function nombrePlan(sigla){
+  const s=String(sigla||'').trim(); if(!s)return '';
+  const p=filas('PLANES').find(x=>String(x[0]).trim().toUpperCase()===s.toUpperCase());
+  return p?`${p[1]} (${p[0]})`:s;
+}
+const FUENTE_PLANILLA={name:'Times New Roman',sz:11};
+const BORDE_FINO={style:'thin',color:{rgb:'000000'}};
+const BORDE_TODO={top:BORDE_FINO,bottom:BORDE_FINO,left:BORDE_FINO,right:BORDE_FINO};
+/** Aplica a una hoja recién creada (aoa_to_sheet) el formato del modelo oficial, comparado celda por celda
+ *  contra "PLANILLA Conciliacion 1ER ETAPA.xlsx" el 06/07/2026: fuente Times New Roman 11 en toda la hoja;
+ *  fila de numeración "(1)(2)(3)..." sin borde, centrada, sin negrita; fila de encabezado (nombres de
+ *  columna) en negrita, con borde fino en las 4 caras, centrada y con ajuste de texto; filas de datos con
+ *  borde fino y fuente normal. Requiere xlsx-js-style (el build community de SheetJS no permite escribir
+ *  estilos de celda, solo leerlos). */
+function estilizarPlanilla(ws,{filaNum,filaNombres,filaFinDatos,cols}){
+  const set=(r,c,style)=>{
+    const addr=XLSX.utils.encode_cell({r:r-1,c:c-1});
+    if(!ws[addr])ws[addr]={t:'s',v:''};
+    ws[addr].s=style;
+  };
+  if(filaNum) for(let c=1;c<=cols;c++) set(filaNum,c,{font:FUENTE_PLANILLA,alignment:{horizontal:'center'}});
+  for(let c=1;c<=cols;c++) set(filaNombres,c,{font:{...FUENTE_PLANILLA,bold:true},border:BORDE_TODO,alignment:{horizontal:'center',vertical:'center',wrapText:true}});
+  for(let r=filaNombres+1;r<=filaFinDatos;r++) for(let c=1;c<=cols;c++) set(r,c,{font:FUENTE_PLANILLA,border:BORDE_TODO});
+}
+/** Da formato (negrita, sin bordes) a la fila 1 —que ya tiene el texto institucional puesto como primer
+ *  elemento del array de la hoja, ver INSTITUCION_HEADER— y la mergea A1:último col para que se vea como
+ *  un título de una sola línea. La usuaria pidió esta línea al principio de cada hoja de la planilla oficial. */
+function encabezadoInstitucion(ws,cols){
+  const addr=XLSX.utils.encode_cell({r:0,c:0});
+  if(ws[addr])ws[addr].s={font:{...FUENTE_PLANILLA,bold:true}};
+  ws['!merges']=(ws['!merges']||[]).concat({s:{r:0,c:0},e:{r:0,c:cols-1}});
+}
 function genPlanilla(){
   if(typeof XLSX==='undefined')return msg('No cargó la librería de Excel');
   const {problemas,excedidas,huerfanas,cargaMal}=calcularValidacion();
@@ -1541,24 +1603,38 @@ function genPlanilla(){
     if(!confirm(resumen+'\n\n¿Generar la planilla igual? (revisá la pestaña Validador antes de enviarla a la DES)'))return;
   }
   const wb=XLSX.utils.book_new();
-  // Hoja 1: igual a la del modelo oficial (6 columnas, con fila de numeración). El modelo trae 7 filas en
-  // blanco (encabezado institucional/carátula) antes de la fila de numeración — se respeta esa posición
-  // (fila 8-9) para que coincida con el modelo (validado contra "PLANILLA Conciliacion 1ER ETAPA.xlsx" 06/07/2026).
-  const h1=[[],[],[],[],[],[],[],["(1)","(2)","(3)","(4)","(5)","(6)"],
+  const iCuP=ix('CUPOF','PLAN'), iCuC=ix('CUPOF','CURSO'), iCuD=ix('CUPOF','DIV.'), iCuCl=ix('CUPOF','CLASE'),
+        iCuCa=ix('CUPOF','CARGA'), iCuSuf=ix('CUPOF','SUFIJO TIEMPO'), iCuEsp=ix('CUPOF','ESPACIO'),
+        iCuInst=ix('CUPOF','INSTRUMENTO'), iCuFecha=ix('CUPOF','FECHA');
+  const desg=filas('DESIGNACIONES'), asg=filas('ASIGNACIONES');
+  const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAp=ix('ASIGNACIONES','PLAN DESTINO'),iAc2=ix('ASIGNACIONES','CURSO'),
+        iAd=ix('ASIGNACIONES','DIV.'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS');
+
+  // ---------- Hoja 1: INSTRUMENTOS DE CREACIÓN ----------
+  // PLAN DE ESTUDIO ahora muestra "Nombre completo (SIGLA)" (relación PLANES↔CURSOS). CARGA HORARIA suma
+  // las CUPOF de horas de ese curso+división (buscadas por PLAN+CURSO+DIV., no por texto), EXCLUYENDO las
+  // que pertenecen a un Tiempo (tienen SUFIJO TIEMPO cargado) — pedido explícito de la usuaria 06/07/2026.
+  const h1=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","(5)","(6)"],
     ["CURSO","DIVISIÓN","PLAN DE ESTUDIO","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO LEGAL","CARGA HORARIA\n(expresar en valores numéricos)"]];
+  const iCrP=ix('CURSOS','PLAN'),iCrC=ix('CURSOS','CURSO'),iCrD=ix('CURSOS','DIVISIÓN'),
+        iCrI1=ix('CURSOS','INSTR. (matriz)'),iCrF1=ix('CURSOS','FECHA (matriz)'),iCrI2=ix('CURSOS','INSTR. (DDJJ)'),iCrF2=ix('CURSOS','FECHA (DDJJ)');
   filas('CURSOS').forEach(f=>{
-    const instr=f[4]||f[6]||'',fecha=(f[4]?f[5]:f[7])||'';
-    const caja=filas('ESPACIOS').filter(e=>e[0]===f[0]&&String(e[1])===String(f[1])&&e[4]!=='Sí').reduce((a,e)=>a+unNum(e[3]),0);
-    h1.push([f[1],f[2],f[0],instr,fecha,caja||'']);});
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h1),"INSTRUMENTOS DE CREACIÓN");
-  // Hoja 2: 13 columnas del modelo oficial (antes faltaba "ADECUACIÓN A LA EGB3/POLIMODAL" como columna aparte).
-  // El modelo trae 1 fila en blanco antes de la fila de numeración (fila 2-3) — se respeta esa posición.
-  const h2=[[],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],
+    const instr=f[iCrI1]||f[iCrI2]||'',fecha=(f[iCrI1]?f[iCrF1]:f[iCrF2])||'';
+    const divs=String(f[iCrD]||'').split('/').map(x=>x.trim()).filter(Boolean);
+    const carga=filas('CUPOF').filter(c=>c[iCuCl]==='Horas'&&!c[iCuSuf]&&String(c[iCuP]).trim().toUpperCase()===String(f[iCrP]).trim().toUpperCase()&&String(c[iCuC]).trim()===String(f[iCrC]).trim()&&divs.includes(String(c[iCuD]).trim())).reduce((a,c)=>a+unNum(c[iCuCa]),0);
+    h1.push([f[iCrC],f[iCrD],nombrePlan(f[iCrP]),instr,fecha,carga||'']);});
+  const ws1=XLSX.utils.aoa_to_sheet(h1);
+  encabezadoInstitucion(ws1,6);
+  estilizarPlanilla(ws1,{filaNum:2,filaNombres:3,filaFinDatos:h1.length,cols:6});
+  XLSX.utils.book_append_sheet(wb,ws1,"INSTRUMENTOS DE CREACIÓN");
+
+  // ---------- Hoja 2: HORAS QUE POSEE LA INSTITUCION ----------
+  // Filas ordenadas por Plan, Curso, División y Espacio Curricular (nombre completo); Plan y Espacio ahora
+  // muestran el nombre completo (pedido de la usuaria 06/07/2026).
+  const h2=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],
     ["CURSO","DIVISION","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","ESPACIO CURRICULAR","CARGA HORARIA\n(expresar en valores numéricos)","CUPOF\n(incluir todas las CUPOF habilitadas por el instrumento legal)",
      "ADECUACIÓN A LA EGB3/POLIMODAL","ADECUACIÓN A LA RESOLUCIÓN N° 672/19 MCyE y RESOL N°……MCyE BACHILLER EN…","DOCENTE A CARGO","SITUACIÓN REVISTA","OBSERVACIONES\n(En Actividad, Lic. Art 22, 23, 24, UT, etc)"]];
-  const desg=filas('DESIGNACIONES'),asg=filas('ASIGNACIONES');
-  const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAp=ix('ASIGNACIONES','PLAN DESTINO'),iAc2=ix('ASIGNACIONES','CURSO'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS');
-  filas('CUPOF').filter(f=>f[1]==='Horas').forEach(f=>{
+  const filasH2=filas('CUPOF').filter(f=>f[iCuCl]==='Horas').map(f=>{
     const k=cupKey(f[0]);
     const tit=desg.filter(d=>cupKey(d[2])===k&&d[3]!=='SUPLENTE'),sup=desg.filter(d=>cupKey(d[2])===k&&d[3]==='SUPLENTE');
     const q=tit[0]||sup[0]||['','(SIN DESIGNACIÓN)','',''];
@@ -1567,28 +1643,72 @@ function genPlanilla(){
     // balanceDocentes) — la suplente que la cubre se documenta acá, en OBSERVACIONES, con nombre+DNI+"(S)".
     const obs=[sup.length&&tit.length?'Suplente: '+sup.map(x=>`${x[1]}, DNI ${x[0]} (S)`).join('; '):'',!tit.length&&sup.length?'Suplente sin titular/interino':''].filter(Boolean).join('. ');
     const dest=asg.filter(a=>cupKey(a[iAcu])===k).map(a=>`${a[iAp]} — ${a[iAe]} — ${a[iAc2]} (${a[iAh]} hs)`).join(' / ');
-    h2.push([f[4],f[5],f[10]||'',f[11]||'',f[7],f[3],f[8],f[0],'',dest,q[1],q[3]||'',obs]);});
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h2),"HORAS QUE POSEE LA INSTITUCION");
-  // Hoja 3: 11 columnas oficiales de DETALLE DE CARGOS + 3 extra útiles al final (Titular/Interino, Sit.
-  // Revista, Suplente, Observaciones — no las pide el modelo oficial como columna propia pero conviene
-  // conservarlas). Se leen las columnas de CARGOS por NOMBRE (ix), no por posición fija, para no romperse
-  // si se agregan/reordenan columnas (p.ej. la columna CUPOF, agregada 05/07/2026 por
-  // agregarColumnaCupofCargos() — ahora si alimenta "CUPOF QUE CUBRE EL CARGO", antes quedaba en blanco).
-  const h3=[["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)"],
+    const planNom=nombrePlan(f[iCuP]), espNom=nombreEspacio(f[iCuEsp]);
+    return {plan:planNom,curso:String(f[iCuC]||''),div:String(f[iCuD]||''),espacio:espNom,
+      row:[f[iCuC],f[iCuD],f[iCuInst]||'',f[iCuFecha]||'',planNom,espNom,f[iCuCa],f[0],'',dest,q[1],q[3]||'',obs]};
+  });
+  filasH2.sort((a,b)=>a.plan.localeCompare(b.plan)||a.curso.localeCompare(b.curso,'es',{numeric:true})||a.div.localeCompare(b.div)||a.espacio.localeCompare(b.espacio));
+  filasH2.forEach(x=>h2.push(x.row));
+  const ws2=XLSX.utils.aoa_to_sheet(h2);
+  encabezadoInstitucion(ws2,13);
+  estilizarPlanilla(ws2,{filaNum:2,filaNombres:3,filaFinDatos:h2.length,cols:13});
+  XLSX.utils.book_append_sheet(wb,ws2,"HORAS QUE POSEE LA INSTITUCION");
+
+  // ---------- Hoja 3: DETALLE DE CARGOS ----------
+  // Aclarado por la usuaria 06/07/2026: esta hoja NO es sobre los cargos de Planta Funcional (los que
+  // terminan en "POFC-C"), sino específicamente sobre los PTP/PTC — es decir, se arma desde TIEMPOS, no
+  // desde CARGOS. Por cada Tiempo, por cada CUPOF que lo compone (por SUFIJO TIEMPO), se muestra el
+  // Plan/Espacio(nombre completo)/Curso/División de esa CUPOF, y en "ADECUACIÓN A LA RESOLUCIÓN..." dónde
+  // quedó reasignada en el plan nuevo — si tiene más de una asignación (partida), se repite una fila por
+  // cada una con su valor parcial. Se sacan las columnas Titular/Interino, Sit. revista, Suplente y
+  // Observaciones (pedido explícito de la usuaria).
+  const h3=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)"],
     ["CARGO","N° DE CARGO","INSTRUMENTO LEGAL DE CREACIÓN (del cargo)","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","CUPOF QUE CUBRE EL CARGO","ÁREA","ESPACIOS CURRICULARES (CUPOF)","CURSO","DIVISIÓN",
-     "ADECUACIÓN A LA RESOLUCIÓN N° 672/19 Y RESOL N°….MCyE BACHILLER EN…..","Titular/Interino","SIT. REVISTA","SUPLENTE","OBSERVACIONES"]];
-  {
-    const cCarg=ix('CARGOS','CARGO'),cN=ix('CARGOS','N°'),cCup=ix('CARGOS','CUPOF'),cInst=ix('CARGOS','INSTRUMENTO'),
-          cFec=ix('CARGOS','FECHA CREACIÓN'),cOcu=ix('CARGOS','OCUPANTE 2026'),cSit=ix('CARGOS','SIT. REVISTA'),
-          cSup=ix('CARGOS','SUPLENTE'),cObs=ix('CARGOS','OBSERVACIONES');
-    const g=(f,idx)=>idx>-1?(f[idx]??''):'';
-    filas('CARGOS').forEach(f=>h3.push([g(f,cCarg),g(f,cN),g(f,cInst),g(f,cFec),'',g(f,cCup),'','','','','',g(f,cOcu),g(f,cSit),g(f,cSup),g(f,cObs)]));
-  }
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h3),"DETALLE DE CARGOS ");
-  // Hoja 4: el modelo trae una fila de numeración (1)(2)(3)(4),(5)(6) antes de los encabezados (columna 5 sin número).
-  const h4=[["(1)","(2)","(3)","(4)","","(5)","(6)"],
+     "ADECUACIÓN A LA RESOLUCIÓN N° 672/19 Y RESOL N°….MCyE BACHILLER EN…..."]];
+  const iTsuf=ix('TIEMPOS','SUFIJO'),iTtipo=ix('TIEMPOS','TIPO'),iTinst=ix('TIEMPOS','INSTRUMENTO'),iTfec=ix('TIEMPOS','FECHA');
+  filas('TIEMPOS').forEach(t=>{
+    const miembros=filas('CUPOF').filter(c=>c[iCuCl]==='Horas'&&String(c[iCuSuf]||'').trim()===String(t[iTsuf]||'').trim());
+    if(!miembros.length){ h3.push([t[iTtipo],t[iTsuf],t[iTinst],t[iTfec],'','','','','','','(sin CUPOF vinculadas todavía)']); return; }
+    miembros.forEach(c=>{
+      const asigsC=asg.filter(a=>cupKey(a[iAcu])===cupKey(c[0]));
+      const base=[t[iTtipo],t[iTsuf],t[iTinst],t[iTfec],nombrePlan(c[iCuP]),c[0],'',nombreEspacio(c[iCuEsp]),c[iCuC],c[iCuD]];
+      if(!asigsC.length){ h3.push([...base,'(sin asignación en el plan nuevo)']); return; }
+      asigsC.forEach(a=>h3.push([...base,`${a[iAp]} — ${a[iAe]} — ${a[iAc2]}${a[iAd]?' '+a[iAd]:''} (${a[iAh]} hs)`]));
+    });
+  });
+  const ws3=XLSX.utils.aoa_to_sheet(h3);
+  encabezadoInstitucion(ws3,11);
+  estilizarPlanilla(ws3,{filaNum:2,filaNombres:3,filaFinDatos:h3.length,cols:11});
+  XLSX.utils.book_append_sheet(wb,ws3,"DETALLE DE CARGOS ");
+
+  // ---------- Hoja 4: PROPUESTA DE CREACION DE CARGOS ----------
+  // La columna E queda SIEMPRE vacía (separa la tabla de la izquierda, sin dato vinculado todavía, de la
+  // de la derecha). Columnas F/G ahora se completan: una fila por cada espacio curricular de los planes
+  // nuevos que no tiene ninguna asignación, o que tiene asignación incompleta, con la carga horaria total
+  // o parcial que falta para completarla (pedido explícito de la usuaria 06/07/2026).
+  const h4=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","","(5)","(6)"],
     ["AREA","CARGO \n(PTP 12 - PTP 18 - PTP 24 - PTP 30 PTC 36)","ESPACIOS CURRICULARES QUE SE VAN ASIGNAR A ESOS CARGOS","CARGA HORARIA DEL ESPACIO CURRICULAR","","ESPACIOS CURRICULARES DE HORAS SUELTAS PARA COMPLETAR LA CAJA CURRICULAR","HORAS CATEDRAS"]];
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(h4),"PROPUESTA DE CREACION DE CARGOS");
+  const iEsP=ix('ESPACIOS','PLAN'),iEsC=ix('ESPACIOS','CURSO');
+  const faltantes=[];
+  ['CBS-672','BCS','BCN','BEA','BEA-EPJA'].forEach(plan=>{
+    const cursosP=[...new Set(filas('ESPACIOS').filter(f=>f[iEsP]===plan).map(f=>String(f[iEsC])))];
+    cursosP.forEach(curso=>{
+      const divs=(DIVS[plan]&&DIVS[plan][curso])||['I'];
+      divs.forEach(div=>{
+        const caja=cajaDe(plan,curso);
+        const asigsAqui=asigsDe(plan,curso,div);
+        const suma={};caja.forEach(c=>suma[c.n]=0);
+        asigsAqui.forEach(({f})=>{if(!cupKey(f[iAcu]))return;const m=matchEspacio(f[iAe],caja);if(m)suma[m.n]+=unNum(f[iAh]);});
+        caja.forEach(c=>{ const falta=Math.round((c.hs-suma[c.n])*10)/10; if(falta>0) faltantes.push([`${c.nom} (${PLAN_INV[plan]||plan} ${curso}${div})`,falta]); });
+      });
+    });
+  });
+  faltantes.forEach(([nombre,falta])=>h4.push(['','','','','',nombre,falta]));
+  const ws4=XLSX.utils.aoa_to_sheet(h4);
+  encabezadoInstitucion(ws4,7);
+  estilizarPlanilla(ws4,{filaNum:2,filaNombres:3,filaFinDatos:h4.length,cols:7});
+  XLSX.utils.book_append_sheet(wb,ws4,"PROPUESTA DE CREACION DE CARGOS");
+
   XLSX.writeFile(wb,"PLANILLA Conciliacion 1ER ETAPA - EPES14.xlsx");msg('Planilla generada');
 }
 /* Márgenes, fuente y sangrías tomados de modelo_disposición.doc (agregado por la usuaria 06/07/2026):
