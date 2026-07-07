@@ -7,6 +7,12 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style/dist/xlsx.bundle.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- Actas: .docx real (formato nativo de Word, no el truco HTML-como-.doc) + PDF vectorial con texto
+     seleccionable (no una imagen rasterizada como daba html2pdf) — pedido de la usuaria 07/07/2026 tras
+     varias rondas de bugs de compatibilidad del filtro de importación HTML de Word. -->
+<script src="https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/pdfmake.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/vfs_fonts.js"></script>
 <style>
 :root { --azul:#1F4E78; --azul2:#2E75B6; --gris:#f4f6f8; --borde:#d0d7de; --rojo:#c0392b; --verde:#1e8449; --amar:#b9770e; }
 * { box-sizing:border-box; margin:0; }
@@ -1864,32 +1870,6 @@ function genPlanilla(){
 
   XLSX.writeFile(wb,"PLANILLA Conciliacion 1ER ETAPA - EPES14.xlsx");msg('Planilla generada');
 }
-/* Márgenes, fuente y sangrías tomados de modelo_disposición.doc (agregado por la usuaria 06/07/2026):
- * página Oficio/Legal 215.9mm x 355.6mm, márgenes sup/inf 25mm, izq/der 30mm; fuente Arial 12pt en todo
- * el cuerpo. Sangrías: .actap (Actas) 1cm de primera línea; .consid (VISTO/CONSIDERANDO del detalle de la
- * Disposición) 2.75cm de primera línea, igual que el modelo; .artic (cada Artículo) sangría francesa de
- * 3cm (la línea del encabezado del artículo arranca sin sangría y, si el texto pasa a una 2da línea, esa
- * línea queda sangrada 3cm, igual que en el modelo). */
-const ACTA_CSS=`@page{size:215.9mm 355.6mm;margin:25mm 10mm 25mm 30mm}
-*{box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:11pt;margin:24px}h1{text-align:center;font-size:14pt}
-/* table-layout:fixed + wrap (en vez de white-space:nowrap) para que ninguna celda empuje la tabla más
- * allá del área de impresión — antes los códigos CUPOF largos y los encabezados forzaban overflow y el
- * contenido quedaba cortado en el PDF (reportado por la usuaria 06/07/2026). Los anchos reales de cada
- * columna se fijan con el atributo width= en cada <th> (ver filaTh) en vez de <colgroup>: Word ignora
- * <colgroup>/<col> casi por completo al convertir el HTML a .doc, y sin box-sizing:border-box el padding
- * se sumaba al ancho declarado descuadrando todo — ambas cosas causaban el desborde/amontonamiento visto
- * en los .doc editables (reportado por la usuaria 06/07/2026, segunda ronda). */
-table{border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed}
-th{background:#d9d9d9;color:#000;border:1px solid #777;padding:2px 4px;font-size:8pt;overflow-wrap:break-word;word-break:break-word}
-td{border:1px solid #777;padding:2px 4px;font-size:8pt;overflow-wrap:break-word;word-break:break-word;vertical-align:top}
-td.cup{font-size:7pt;font-family:Consolas,monospace;overflow-wrap:anywhere;word-break:break-all}
-.tiempoHead{background:#e8e8e8;font-weight:bold;text-align:center;padding:4px;border:1px solid #777;margin:10px 0 0}
-p{text-align:justify;margin:7px 0}.salto{page-break-before:always;break-before:page}
-.actap{text-indent:1cm}
-.consid{text-indent:2.75cm}
-.artic{margin-left:3cm;text-indent:-3cm}
-.hdr{font-weight:bold}`;
 /** Arma la fila de encabezado de una tabla con el ancho de cada columna puesto en el atributo HTML
  *  width= (además del style, por las dudas) de cada <th> — en vez de <colgroup>, que Word ignora casi
  *  por completo al convertir el HTML a .doc. El atributo width= en las celdas SÍ lo respeta tanto Word
@@ -1906,27 +1886,28 @@ const TD_ST='border:1px solid #777;padding:1px 3px;font-size:8pt;font-family:Ari
 const TH_ST='background:#d9d9d9;border:1px solid #777;padding:2px 3px;font-size:8pt;font-family:Arial,sans-serif;font-weight:bold;line-height:1.15;vertical-align:middle';
 const CUP_ST='border:1px solid #777;padding:1px 3px;font-size:7pt;font-family:Consolas,monospace;line-height:1.15;vertical-align:top;word-break:break-all';
 const CUP_SPAN_ST='font-family:Consolas,monospace;font-size:7pt;word-break:break-all';
-// Aun con el font-size/padding puestos inline en el td, las filas seguían viéndose ~3 veces más altas de
-// lo necesario (reportado por la usuaria 07/07/2026, segunda vuelta). Causa: el texto suelto dentro de un
-// <td> (sin ningún <p> explícito) Word lo envuelve en SU PROPIO párrafo implícito con el espaciado por
-// defecto del estilo "Normal" del documento (que trae su propio "espacio posterior"/interlineado, mayor
-// al de nuestros párrafos reales) — por eso el cuerpo del acta (que sí usa <p> con margin propio) se ve
-// compacto y las celdas de tabla no. Fix: envolver el contenido de cada celda en un <p> explícito con
-// margin/line-height mínimos, para que Word tome ESE párrafo en vez de crear uno con su estilo por defecto.
-function celda(html){return `<p style="margin:0;padding:0;line-height:1.05">${html}</p>`;}
+// Aun envolviendo el contenido en un <p style="margin:0;line-height:1.05"> las filas seguían ~3 veces más
+// altas de lo necesario (reportado por la usuaria 07/07/2026, tercera vuelta). Causa real: Word interpreta
+// "line-height" como una altura MÍNIMA ("at least"), no exacta — si CUALQUIER elemento de esa línea (incluida
+// la marca de párrafo invisible, que puede seguir cargando el tamaño de fuente "Normal" del documento aunque
+// el texto visible ya esté en 8pt) pide más alto, Word igual expande la fila para darle lugar, ignorando nuestro
+// line-height chico. La propiedad específica de Word para forzar una altura EXACTA (no mínima) es
+// mso-line-height-rule:exactly, junto con un line-height en puntos (no relativo) y anulando también el
+// espaciado alternativo de párrafo (mso-margin-top-alt/mso-margin-bottom-alt, que Word a veces prioriza por
+// sobre el margin común). Sin esto, ninguna combinación de font-size/padding/margin alcanza — es la causa
+// documentada de "filas de tabla mucho más altas que el texto" en documentos .doc generados desde HTML.
+function celda(html,sizePt,extra){
+  const sz=sizePt||8;
+  return `<p style="margin:0;mso-margin-top-alt:0;mso-margin-bottom-alt:0;padding:0;font-size:${sz}pt;line-height:${sz+1}pt;mso-line-height-rule:exactly${extra?';'+extra:''}">${html}</p>`;
+}
 /** Lleva un texto a minúsculas salvo la primera letra (pedido de la usuaria 07/07/2026 para Sit. Revista
  *  y Espacio Curricular Actual en la tabla de reasignación: "INTERINO"->"Interino"). No se aplica a
  *  nombreEspacio()/nombrePlan() porque esas funciones ya devuelven nombres con mayúsculas/minúsculas
  *  correctas leídas de la BD (ESPACIO_NOMBRES / hoja PLANES), no códigos en mayúscula sostenida. */
 function sentenceCase(s){s=String(s??'').trim();if(!s)return '';const low=s.toLowerCase();return low.charAt(0).toUpperCase()+low.slice(1);}
 function filaTh(headers,anchos){
-  return '<tr>'+headers.map((h,i)=>`<th width="${anchos[i]}%" style="width:${anchos[i]}%;${TH_ST}">${celda(h)}</th>`).join('')+'</tr>';
+  return '<tr>'+headers.map((h,i)=>`<th width="${anchos[i]}%" style="width:${anchos[i]}%;${TH_ST}">${celda(h,8,'font-weight:bold')}</th>`).join('')+'</tr>';
 }
-/** Marcador de salto de página específico de Word: además de la clase CSS ".salto" (que ya funciona bien
- *  en PDF/navegador), Word necesita este <br> especial (mso-special-character:line-break combinado con
- *  page-break-before:always) para respetar el salto al convertir el HTML a .doc — sin esto, la Disposición
- *  podía terminar arrancando a mitad de página en el editable de Word (reportado por la usuaria 06/07/2026). */
-const SALTO_WORD=`<br clear=all style="mso-special-character:line-break;page-break-before:always">`;
 /* Constantes legales fijas del modelo (Res. de la reforma, marco legal, localidad, firma). Se repiten
  * igual en toda acta — si en algún momento cambian, se actualizan acá una sola vez. */
 const LOCALIDAD='Comandante Fontana';
@@ -2044,118 +2025,266 @@ function agruparPorEspacio(items){
   });
   return grupos;
 }
-function actaHTML(docente){
+/* ============ GENERACIÓN REAL DE ACTAS: .docx nativo (docx.js) + PDF vectorial (pdfmake) ============
+ * Reemplaza el truco anterior (HTML guardado como .doc + PDF rasterizado con html2canvas/jsPDF) — pedido
+ * de la usuaria 07/07/2026 tras varias rondas de bugs de compatibilidad del filtro de importación de HTML
+ * de Word, y porque el PDF anterior era una imagen (texto no seleccionable/copiable/buscable). docx.js
+ * arma un .docx real (formato nativo de Word, sin pasar por su filtro de HTML); pdfmake arma un PDF
+ * vectorial real con texto real. Ambos consumen los mismos datos ya preparados por origenesDeDocente/
+ * destinosDeDocente/agruparPorEspacio/situacionDeCupof/nombreEspacio/nombrePlan/sentenceCase (sin cambios
+ * en esas funciones) — solo cambia CÓMO se dibuja el contenido, no de dónde sale.
+ * Nota de fuente: pdfmake no trae Arial embebida (no es libre para redistribuir), usa Roboto por defecto
+ * (sans-serif profesional similar) para todo el documento, incluidas las CUPOF (no hay una monospace
+ * embebida sin agregar otra fuente por CDN); el .docx sí usa Arial real para el texto y Consolas para las
+ * CUPOF, ambas ya instaladas en cualquier Word.
+ * Limitación conocida de pdfmake: no soporta nativamente la sangría de "solo la primera línea" de un
+ * párrafo (docx.js sí) — se aproxima con espacios iniciales; es un detalle estético menor, no afecta el
+ * contenido ni la validez legal del documento. */
+function actaDatos(docente){
   const d=filas('DOCENTES').find(f=>f[1]===docente)||['',docente];
   const dni=String(d[0]).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
   const fecha=document.getElementById('gFecha')?.value||'marzo de 2026';
   const tiempo=tiempoDeDocente(docente);
   const{conTiempo:origConTiempo,sueltas:origSueltas}=origenesDeDocente(docente,tiempo);
   const{conTiempo:destConTiempo,sueltas:destSueltas}=destinosDeDocente(docente,tiempo);
-  // "sit" ya NO se usa como situación blanket para todas las filas del acta (ver situacionDeCupof arriba):
-  // cada fila de origen (o.sit) y cada grupo de destino (g.items[0].sit) trae su propia situación real,
-  // leída de DESIGNACIONES para esa CUPOF puntual. Se conserva solo para el encabezado/tratamiento si hiciera falta.
   const espacioRef=(origConTiempo[0]||origSueltas[0]||{}).espacio||(destConTiempo[0]||destSueltas[0]||{}).espacio||'';
   const materia=materiaDeDocente(docente,espacioRef);
-  const tratamiento=materia?`profesor/a de ${esc(materia)}`:'docente';
+  const tratamiento=materia?`profesor/a de ${materia}`:'docente';
   const hsSueltas=sumHs(destSueltas);
-  // Espacio/Plan/Situación con nombre completo (nombreEspacio/nombrePlan, ya vienen bien capitalizados desde
-  // ESPACIO_NOMBRES/hoja PLANES) + situación en minúsculas salvo la inicial (sentenceCase) — antes se mostraba
-  // el código crudo en mayúsculas (p.ej. "NING/POFC/INTERINO"), pedido de la usuaria 07/07/2026. La CUPOF
-  // completa va en su propia segunda línea (<br>, sin compartir renglón con el texto anterior) para que no
-  // se corte a la mitad — con la columna al 76% le sobra ancho de sobra para entrar en una sola línea.
-  const filaOrigen=o=>`<tr><td style="${TD_ST}">${celda(esc(o.curso))}</td><td style="${TD_ST}">${celda(esc(o.div))}</td><td style="${TD_ST}">${celda(esc(o.carga))}</td><td style="${TD_ST}">${celda(`${esc(nombreEspacio(o.espacio))}/${esc(nombrePlan(o.plan))}/${esc(sentenceCase(o.sit))}<br><span class="cup" style="${CUP_SPAN_ST};white-space:nowrap">${esc(o.cupofTxt)}</span>`)}</td></tr>`;
-  // Fila de "reasignaciones": ahora arranca con el Plan (sigla corta, PLAN_MAP) como primera columna —
-  // pedido de la usuaria 06/07/2026 para poder identificar el destino sin abrir el CUPOF. La situación de
-  // revista mostrada es la del PRIMER item del grupo (todas las CUPOF de un mismo grupo de reasignación
-  // pertenecen a la misma designación real), leída de DESIGNACIONES — no una situación genérica del docente.
-  // Cada grupo (una combinación curso/división con sus CUPOF de origen agrupadas por rowspan) se envuelve
-  // en su propio <tbody style="page-break-inside:avoid">. Sin esto, si el salto de página automático caía
-  // A MITAD del rowspan (entre dos <tr> del mismo grupo), la fila continuada en la página siguiente perdía
-  // las celdas fusionadas (Plan/Curso/Div/Horas/Sit.Revista/Espacio) y se veía "cortada"/desalineada —
-  // exactamente lo reportado por la usuaria 07/07/2026 al comparar el .doc real con la reconstrucción.
-  // Con page-break-inside:avoid en el <tbody>, el grupo entero salta completo a la página siguiente en vez
-  // de partirse (misma lógica que .bloqueAsig en la Planilla de Asignación de Horas).
-  // Plan sin partir en 2 líneas (white-space:nowrap — siglas como "BEA-EPJA" se cortaban por el guion en
-  // una columna angosta); Curso/Div/Hs. con el ancho mínimo posible; Sit. Revista y Espacio Curricular Actual
-  // en minúsculas salvo inicial (sentenceCase, mismo pedido que en la tabla de origen); CUPOF en una sola
-  // línea sin partir (nowrap) — pedidos de la usuaria 07/07/2026, tercera vuelta.
-  const filaDestinoGrupo=g=>{const n=g.items.length;const planSigla=PLAN_MAP[g.plan]||g.plan;const sitGrupo=sentenceCase(g.items[0]?.sit||'');return `<tbody style="page-break-inside:avoid">${g.items.map((it,j)=>`<tr>${j===0?
-    `<td rowspan="${n}" style="${TD_ST};white-space:nowrap">${celda(esc(planSigla))}</td><td rowspan="${n}" style="${TD_ST}">${celda(esc(g.curso))}</td><td rowspan="${n}" style="${TD_ST}">${celda(esc(g.div))}</td><td rowspan="${n}" style="${TD_ST}">${celda(esc(g.horasCaja))}</td><td rowspan="${n}" style="${TD_ST}">${celda(esc(sitGrupo))}</td><td rowspan="${n}" style="${TD_ST}">${celda(esc(sentenceCase(g.espacio)))}</td>`:''}
-    <td class="cup" style="${CUP_ST};white-space:nowrap">${celda(esc(it.origen))}</td><td style="${TD_ST}">${celda(esc(it.hs))}</td></tr>`).join('')}</tbody>`;};
-  const filaResumenTiempo=r=>`<tr><td class="cup" style="${CUP_ST}">${celda(esc(r.origen))}</td><td style="${TD_ST}">${celda(esc(r.espacio))}</td><td style="${TD_ST}">${celda(esc(r.hs))}</td><td style="${TD_ST}">${celda(esc(r.curso))}</td><td style="${TD_ST}">${celda(esc(r.div))}</td><td style="${TD_ST}">${celda(esc(r.turno||''))}</td></tr>`;
-  const filaResumenSuelta=r=>`<tr><td class="cup" style="${CUP_ST}">${celda(r.origenes.map(o=>`${esc(o.texto)}${o.instrumento?'<br>'+esc(o.instrumento):''}`).join('<br>'))}</td><td style="${TD_ST}">${celda(esc(r.espacio))}</td><td style="${TD_ST}">${celda(esc(r.hs))}</td><td style="${TD_ST}">${celda(esc(r.curso))}</td><td style="${TD_ST}">${celda(esc(r.div))}</td></tr>`;
-
-  const TBL_ST='border-collapse:collapse;width:100%;table-layout:fixed';
-  const bloqueTiempo=tiempo?`<p class="tiempoHead">${esc(tiempo.tipo)}-${esc(tiempo.hs)} horas- ${esc(tiempo.instrumento)}</p>
-   <table style="${TBL_ST}">${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
-   ${origConTiempo.map(filaOrigen).join('')||`<tr><td colspan="4" style="${TD_ST}">(sin datos)</td></tr>`}</table>`:'';
-  const bloqueSueltas=origSueltas.length?`<p style="font-weight:bold;margin:10px 0 4px">HORAS CÁTEDRAS</p>
-   <table style="${TBL_ST}">${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
-   ${origSueltas.map(filaOrigen).join('')}</table>`:'';
-  // Reasignaciones: Plan(sigla), Curso, División, Horas (antes "carga horaria"/"CARGA HORA" — se acorta
-  // el título para reducir el ancho de esa columna), Sit. Revista, Espacio Curricular Actual (antes decía
-  // "Curso actual"), CUPOF, Hs — pedido explícito de la usuaria 06/07/2026.
-  const aceptaTiempo=destConTiempo.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table style="${TBL_ST}">${filaTh(['Plan','Curso','Div','Hs.','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs.'],[9,5,4,6,9,20,42,5])}
-   ${agruparPorEspacio(destConTiempo).map(filaDestinoGrupo).join('')}</table>`:'';
-  const aceptaSueltas=destSueltas.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table style="${TBL_ST}">${filaTh(['Plan','Curso','Div','Hs.','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs.'],[9,5,4,6,9,20,42,5])}
-   ${agruparPorEspacio(destSueltas).map(filaDestinoGrupo).join('')}</table>`:'';
-  const resumenTiempo=destConTiempo.length?`<table style="${TBL_ST}">${filaTh(['CUPOF:HISTÓRICAS','REASIGNADO EN','hs','curso','DIV','TURNO'],[26,30,8,10,8,18])}
-   ${destConTiempo.map(filaResumenTiempo).join('')}</table>`:'';
-  const resumenSueltas=destSueltas.length?`<p>Y la reasignación de ${numALetras(hsSueltas)} (${hsSueltas}) horas cátedra${destSueltas[0]?` al ${esc(destSueltas[0].plan)}`:''} ${RES_MARCO}</p>
-   <table style="${TBL_ST}">${filaTh(['CUPOF-Resolución','REASIGNADO','HORAS','CURSO','DIV'],[32,32,8,14,14])}
-   ${destSueltas.map(filaResumenSuelta).join('')}</table>`:'';
-
-  return `<h1>ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES</h1>
-  <p class="actap">En la localidad de ${LOCALIDAD} a los ………. días del mes de ${esc(fecha)}, comparece en la Dirección de la EPES Nº 14 el/la ${tratamiento} <b>${esc(docente)}</b>, DNI N°: <b>${dni}</b>, quien acepta, en el marco de ${LEY_MARCO}, desempeñarse desde la toma de posesión en las horas reubicadas, con una propuesta pedagógica enmarcada en los objetivos establecidos en la ${RES_MARCO}, en los siguientes espacios curriculares:</p>
-  ${bloqueTiempo}${bloqueSueltas}${aceptaTiempo}${aceptaSueltas}
-  <p class="salto">${SALTO_WORD}</p>
-  <p style="text-align:right;padding-right:2mm"><b>${LOCALIDAD}</b></p>
-  <p class="hdr">VISTO</p>
-  <p class="consid">La necesidad de reorganizar la POF de la escuela, y reasignar horas de los CUPOF y las plazas correspondientes, a la estructura curricular vigente por ${RES_MARCO}; y</p>
-  <p class="hdr">CONSIDERANDO:</p>
-  <p class="consid">Que es necesario reasignar los CUPOF y las plazas a la nueva estructura curricular aprobada por ${RES_MARCO}.</p>
-  <p class="consid">Que la misma se procederá a realizar por medio de Actas de Acuerdo y Disposiciones AD referéndum de la Dirección de Nivel Secundario a través de las cuales el/la docente acepta la reubicación de las horas cátedra en que se encontraba designado/a, a las vigentes según el Plan de estudios contemplado en la resolución citada en el visto;</p>
-  <p class="consid">Que por este instrumento legal se validará la reasignación ${tiempo?`del ${esc(tiempo.tipo)} ${esc(tiempo.hs)} hs.`:'de horas cátedra'} del/de la ${tratamiento} <b>${esc(docente)}</b> -DNI N°: ${dni} a horas cátedras del Plan de estudios vigente.</p>
-  <p class="consid">Que corresponde dictar el acto administrativo pertinente que efectivice la medida tomada;</p>
-  <p class="consid">Por ello;</p>
-  <p style="text-align:center;font-weight:bold">${DIRECTORA}</p>
-  <p style="text-align:center;font-weight:bold">${ESCUELA_APODO}</p>
-  <p style="text-align:center;font-weight:bold">${DIRECTORA_NOMBRE}</p>
-  <p style="text-align:center;font-weight:bold">DISPONE</p>
-  <p class="artic"><b>ARTICULO 1º:</b> Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${tiempo?`del ${esc(tiempo.tipo)} de ${esc(tiempo.hs)} hs.`:'de horas cátedra'} del/de la ${tratamiento} <b>${esc(docente)}</b> -DNI N°: ${dni} según se detalla:</p>
-  ${resumenTiempo}${resumenSueltas}
-  <p>-SUJETO A APLICACIÓN DE ART. 21-</p>
-  <p class="artic"><b>ARTICULO 2º:</b> Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.</p>
-  <p>&nbsp;</p>
-  <p>DISPOSICIÓN Nº _________/</p>
-  <p>&nbsp;</p>
-  <p>NOTIFICADO: …………………………………………………</p>`;
+  return{docente,dni,fecha,tiempo,origConTiempo,origSueltas,destConTiempo,destSueltas,tratamiento,hsSueltas};
 }
-function envolver(cuerpo){return `<html><head><meta charset="utf-8"><style>${ACTA_CSS}</style></head><body>${cuerpo}</body></html>`;}
+const H_ORIGEN=['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'];
+const W_ORIGEN=[8,6,10,76];
+const H_DESTINO=['Plan','Curso','Div','Hs.','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs.'];
+const W_DESTINO=[9,5,4,6,9,20,42,5];
+const H_RESTIEMPO=['CUPOF:HISTÓRICAS','REASIGNADO EN','hs','curso','DIV','TURNO'];
+const W_RESTIEMPO=[26,30,8,10,8,18];
+const H_RESSUELTA=['CUPOF-Resolución','REASIGNADO','HORAS','CURSO','DIV'];
+const W_RESSUELTA=[32,32,8,14,14];
+
+/** Arma el .docx real del acta (docx.js) para un docente. Devuelve un docx.Document listo para Packer. */
+function actaDocxDocumento(docente){
+  const{Document,Paragraph,TextRun,Table,TableRow,TableCell,WidthType,AlignmentType,TableLayoutType,VerticalAlign}=docx;
+  const D=actaDatos(docente);
+  const FONT='Arial';
+  const txt=(t,o={})=>new TextRun({text:String(t??''),font:o.font||FONT,size:o.size||22,bold:!!o.bold});
+  function celdaP(text,{size=16,bold=false,font=FONT}={}){
+    return new Paragraph({spacing:{before:0,after:0,line:size+22,lineRule:'exact'},children:[new TextRun({text:String(text??''),font,size,bold})]});
+  }
+  function celda(text,{width,rowSpan,size=16,bold=false,font=FONT,header=false}={}){
+    return new TableCell({width,rowSpan,verticalAlign:VerticalAlign.TOP,margins:{top:20,bottom:20,left:80,right:80},
+      shading:header?{fill:'D9D9D9'}:undefined,children:[celdaP(text,{size,bold:bold||header,font})]});
+  }
+  function fila(cells){return new TableRow({children:cells});}
+  function encabezado(headers,anchos){
+    return fila(headers.map((h,i)=>celda(h,{width:{size:anchos[i],type:WidthType.PERCENTAGE},header:true})));
+  }
+  function tabla(headers,anchos,filas){
+    return new Table({width:{size:100,type:WidthType.PERCENTAGE},layout:TableLayoutType.FIXED,rows:[encabezado(headers,anchos),...filas]});
+  }
+  function filaOrigen(o){
+    const cel=new TableCell({width:{size:76,type:WidthType.PERCENTAGE},verticalAlign:VerticalAlign.TOP,margins:{top:20,bottom:20,left:80,right:80},children:[
+      new Paragraph({spacing:{before:0,after:0,line:38,lineRule:'exact'},children:[new TextRun({text:`${nombreEspacio(o.espacio)}/${nombrePlan(o.plan)}/${sentenceCase(o.sit)}`,font:FONT,size:16})]}),
+      new Paragraph({spacing:{before:0,after:0,line:34,lineRule:'exact'},children:[new TextRun({text:o.cupofTxt,font:'Consolas',size:14})]}),
+    ]});
+    return fila([celda(o.curso,{width:{size:8,type:WidthType.PERCENTAGE}}),celda(o.div,{width:{size:6,type:WidthType.PERCENTAGE}}),celda(o.carga,{width:{size:10,type:WidthType.PERCENTAGE}}),cel]);
+  }
+  function filaDestinoGrupo(g){
+    const n=g.items.length;
+    const planSigla=PLAN_MAP[g.plan]||g.plan;
+    const sitGrupo=sentenceCase(g.items[0]?.sit||'');
+    return g.items.map((it,j)=>fila([
+      ...(j===0?[
+        celda(planSigla,{width:{size:9,type:WidthType.PERCENTAGE},rowSpan:n}),
+        celda(g.curso,{width:{size:5,type:WidthType.PERCENTAGE},rowSpan:n}),
+        celda(g.div,{width:{size:4,type:WidthType.PERCENTAGE},rowSpan:n}),
+        celda(g.horasCaja,{width:{size:6,type:WidthType.PERCENTAGE},rowSpan:n}),
+        celda(sitGrupo,{width:{size:9,type:WidthType.PERCENTAGE},rowSpan:n}),
+        celda(sentenceCase(g.espacio),{width:{size:20,type:WidthType.PERCENTAGE},rowSpan:n}),
+      ]:[]),
+      celda(it.origen,{width:{size:42,type:WidthType.PERCENTAGE},size:14,font:'Consolas'}),
+      celda(it.hs,{width:{size:5,type:WidthType.PERCENTAGE}}),
+    ]));
+  }
+  function filaResumenTiempo(r){
+    return fila([
+      celda(r.origen,{width:{size:26,type:WidthType.PERCENTAGE},size:14,font:'Consolas'}),
+      celda(r.espacio,{width:{size:30,type:WidthType.PERCENTAGE}}),
+      celda(r.hs,{width:{size:8,type:WidthType.PERCENTAGE}}),
+      celda(r.curso,{width:{size:10,type:WidthType.PERCENTAGE}}),
+      celda(r.div,{width:{size:8,type:WidthType.PERCENTAGE}}),
+      celda(r.turno||'',{width:{size:18,type:WidthType.PERCENTAGE}}),
+    ]);
+  }
+  function filaResumenSuelta(r){
+    const cupCell=new TableCell({width:{size:32,type:WidthType.PERCENTAGE},verticalAlign:VerticalAlign.TOP,margins:{top:20,bottom:20,left:80,right:80},
+      children:r.origenes.map(o=>new Paragraph({spacing:{before:0,after:0,line:34,lineRule:'exact'},children:[
+        new TextRun({text:o.texto,font:'Consolas',size:14}),
+        ...(o.instrumento?[new TextRun({text:o.instrumento,font:'Consolas',size:14,break:1})]:[]),
+      ]}))});
+    return fila([cupCell,
+      celda(r.espacio,{width:{size:32,type:WidthType.PERCENTAGE}}),
+      celda(r.hs,{width:{size:8,type:WidthType.PERCENTAGE}}),
+      celda(r.curso,{width:{size:14,type:WidthType.PERCENTAGE}}),
+      celda(r.div,{width:{size:14,type:WidthType.PERCENTAGE}}),
+    ]);
+  }
+
+  const hijos=[];
+  hijos.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:200},children:[new TextRun({text:'ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES',bold:true,size:28,font:FONT})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'1cm'},spacing:{after:120},children:[
+    txt(`En la localidad de ${LOCALIDAD} a los ………. días del mes de ${D.fecha}, comparece en la Dirección de la EPES Nº 14 el/la ${D.tratamiento} `),
+    txt(D.docente,{bold:true}), txt(', DNI N°: '), txt(D.dni,{bold:true}),
+    txt(`, quien acepta, en el marco de ${LEY_MARCO}, desempeñarse desde la toma de posesión en las horas reubicadas, con una propuesta pedagógica enmarcada en los objetivos establecidos en la ${RES_MARCO}, en los siguientes espacios curriculares:`),
+  ]}));
+  if(D.tiempo){
+    hijos.push(new Paragraph({alignment:AlignmentType.CENTER,shading:{fill:'E8E8E8'},spacing:{before:120,after:60},children:[new TextRun({text:`${D.tiempo.tipo}-${D.tiempo.hs} horas- ${D.tiempo.instrumento}`,bold:true,size:22,font:FONT})]}));
+    hijos.push(tabla(H_ORIGEN,W_ORIGEN,D.origConTiempo.length?D.origConTiempo.map(filaOrigen):[fila([celda('(sin datos)',{width:{size:100,type:WidthType.PERCENTAGE}})])]));
+  }
+  if(D.origSueltas.length){
+    hijos.push(new Paragraph({spacing:{before:120,after:60},children:[new TextRun({text:'HORAS CÁTEDRAS',bold:true,size:22,font:FONT})]}));
+    hijos.push(tabla(H_ORIGEN,W_ORIGEN,D.origSueltas.map(filaOrigen)));
+  }
+  if(D.destConTiempo.length){
+    hijos.push(new Paragraph({spacing:{before:120,after:60},children:[txt(`A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}`)]}));
+    hijos.push(tabla(H_DESTINO,W_DESTINO,agruparPorEspacio(D.destConTiempo).flatMap(filaDestinoGrupo)));
+  }
+  if(D.destSueltas.length){
+    hijos.push(new Paragraph({spacing:{before:120,after:60},children:[txt(`A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}`)]}));
+    hijos.push(tabla(H_DESTINO,W_DESTINO,agruparPorEspacio(D.destSueltas).flatMap(filaDestinoGrupo)));
+  }
+  hijos.push(new Paragraph({alignment:AlignmentType.RIGHT,pageBreakBefore:true,spacing:{after:120},children:[txt(LOCALIDAD,{bold:true})]}));
+  hijos.push(new Paragraph({spacing:{after:120},children:[txt('VISTO',{bold:true})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'2.75cm'},spacing:{after:120},children:[txt(`La necesidad de reorganizar la POF de la escuela, y reasignar horas de los CUPOF y las plazas correspondientes, a la estructura curricular vigente por ${RES_MARCO}; y`)]}));
+  hijos.push(new Paragraph({spacing:{after:120},children:[txt('CONSIDERANDO:',{bold:true})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'2.75cm'},spacing:{after:120},children:[txt(`Que es necesario reasignar los CUPOF y las plazas a la nueva estructura curricular aprobada por ${RES_MARCO}.`)]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'2.75cm'},spacing:{after:120},children:[txt('Que la misma se procederá a realizar por medio de Actas de Acuerdo y Disposiciones AD referéndum de la Dirección de Nivel Secundario a través de las cuales el/la docente acepta la reubicación de las horas cátedra en que se encontraba designado/a, a las vigentes según el Plan de estudios contemplado en la resolución citada en el visto;')]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'2.75cm'},spacing:{after:120},children:[
+    txt(`Que por este instrumento legal se validará la reasignación ${D.tiempo?`del ${D.tiempo.tipo} ${D.tiempo.hs} hs.`:'de horas cátedra'} del/de la ${D.tratamiento} `),txt(D.docente,{bold:true}),txt(` -DNI N°: ${D.dni} a horas cátedras del Plan de estudios vigente.`),
+  ]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'2.75cm'},spacing:{after:120},children:[txt('Que corresponde dictar el acto administrativo pertinente que efectivice la medida tomada;')]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{firstLine:'2.75cm'},spacing:{after:120},children:[txt('Por ello;')]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[txt(DIRECTORA,{bold:true})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[txt(ESCUELA_APODO,{bold:true})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:60},children:[txt(DIRECTORA_NOMBRE,{bold:true})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.CENTER,spacing:{after:120},children:[txt('DISPONE',{bold:true})]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{left:'3cm',hanging:'3cm'},spacing:{after:120},children:[
+    txt('ARTICULO 1º: ',{bold:true}),
+    txt(`Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${D.tiempo?`del ${D.tiempo.tipo} de ${D.tiempo.hs} hs.`:'de horas cátedra'} del/de la ${D.tratamiento} `),txt(D.docente,{bold:true}),txt(` -DNI N°: ${D.dni} según se detalla:`),
+  ]}));
+  if(D.destConTiempo.length) hijos.push(tabla(H_RESTIEMPO,W_RESTIEMPO,D.destConTiempo.map(filaResumenTiempo)));
+  if(D.destSueltas.length){
+    hijos.push(new Paragraph({spacing:{before:60,after:60},children:[txt(`Y la reasignación de ${numALetras(D.hsSueltas)} (${D.hsSueltas}) horas cátedra${D.destSueltas[0]?` al ${D.destSueltas[0].plan}`:''} ${RES_MARCO}`)]}));
+    hijos.push(tabla(H_RESSUELTA,W_RESSUELTA,D.destSueltas.map(filaResumenSuelta)));
+  }
+  hijos.push(new Paragraph({spacing:{before:60,after:120},children:[txt('-SUJETO A APLICACIÓN DE ART. 21-')]}));
+  hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{left:'3cm',hanging:'3cm'},spacing:{after:240},children:[txt('ARTICULO 2º: ',{bold:true}),txt('Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.')]}));
+  hijos.push(new Paragraph({spacing:{after:240},children:[txt('DISPOSICIÓN Nº _________/')]}));
+  hijos.push(new Paragraph({children:[txt('NOTIFICADO: …………………………………………………')]}));
+
+  return new Document({sections:[{properties:{page:{size:{width:'215.9mm',height:'355.6mm'},margin:{top:'25mm',right:'10mm',bottom:'25mm',left:'30mm'}}},children:hijos}]});
+}
+
+/** Arma el docDefinition de pdfmake (PDF vectorial, texto real seleccionable) para un docente. */
+function actaPdfDocDefinition(docente){
+  const D=actaDatos(docente);
+  const mm=v=>v*2.834645669;
+  // Aproximación de sangría de primera línea (pdfmake no soporta text-indent nativo): un texto corto inicial
+  // del ancho aproximado deseado, en blanco, seguido del texto real en el mismo párrafo justificado.
+  const sang=n=>({text:' '.repeat(n),fontSize:11});
+  function celda(text,opts={}){return {text:String(text??''),fontSize:opts.size||8,bold:!!opts.bold,fillColor:opts.header?'#d9d9d9':undefined,margin:[2,1,2,1]};}
+  function encabezado(headers){return headers.map(h=>celda(h,{bold:true,header:true}));}
+  function layoutTabla(){return{hLineWidth:()=>0.5,vLineWidth:()=>0.5,hLineColor:()=>'#777777',vLineColor:()=>'#777777',paddingLeft:()=>2,paddingRight:()=>2,paddingTop:()=>1,paddingBottom:()=>1};}
+  function tabla(headers,anchos,filas){return {table:{headerRows:1,widths:anchos.map(a=>a+'%'),body:[encabezado(headers),...filas]},layout:layoutTabla(),margin:[0,4,0,8]};}
+  function filaOrigen(o){
+    return [celda(o.curso),celda(o.div),celda(o.carga),
+      {stack:[{text:`${nombreEspacio(o.espacio)}/${nombrePlan(o.plan)}/${sentenceCase(o.sit)}`,fontSize:8},{text:o.cupofTxt,fontSize:7}],margin:[2,1,2,1]}];
+  }
+  function filaDestinoGrupo(g,filas){
+    const n=g.items.length;
+    const planSigla=PLAN_MAP[g.plan]||g.plan;
+    const sitGrupo=sentenceCase(g.items[0]?.sit||'');
+    g.items.forEach((it,j)=>{
+      if(j===0){
+        filas.push([celda(planSigla,{}),celda(g.curso),celda(g.div),celda(g.horasCaja),celda(sitGrupo),celda(sentenceCase(g.espacio)),celda(it.origen,{size:7}),celda(it.hs)].map((c,i)=>i<6?{...c,rowSpan:n}:c));
+      } else {
+        filas.push([{},{},{},{},{},{},celda(it.origen,{size:7}),celda(it.hs)]);
+      }
+    });
+  }
+  function filaResumenTiempo(r){return [celda(r.origen,{size:7}),celda(r.espacio),celda(r.hs),celda(r.curso),celda(r.div),celda(r.turno||'')];}
+  function filaResumenSuelta(r){
+    return [{stack:r.origenes.map(o=>({text:o.texto+(o.instrumento?'\n'+o.instrumento:''),fontSize:7})),margin:[2,1,2,1]},celda(r.espacio),celda(r.hs),celda(r.curso),celda(r.div)];
+  }
+  const content=[];
+  content.push({text:'ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES',fontSize:14,bold:true,alignment:'center',margin:[0,0,0,10]});
+  content.push({text:[sang(8),{text:`En la localidad de ${LOCALIDAD} a los ………. días del mes de ${D.fecha}, comparece en la Dirección de la EPES Nº 14 el/la ${D.tratamiento} `},{text:D.docente,bold:true},{text:', DNI N°: '},{text:D.dni,bold:true},{text:`, quien acepta, en el marco de ${LEY_MARCO}, desempeñarse desde la toma de posesión en las horas reubicadas, con una propuesta pedagógica enmarcada en los objetivos establecidos en la ${RES_MARCO}, en los siguientes espacios curriculares:`}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  if(D.tiempo){
+    content.push({text:`${D.tiempo.tipo}-${D.tiempo.hs} horas- ${D.tiempo.instrumento}`,bold:true,alignment:'center',fillColor:'#e8e8e8',margin:[0,6,0,4]});
+    content.push(tabla(H_ORIGEN,W_ORIGEN,D.origConTiempo.length?D.origConTiempo.map(filaOrigen):[[{text:'(sin datos)',colSpan:4,fontSize:8}]]));
+  }
+  if(D.origSueltas.length){
+    content.push({text:'HORAS CÁTEDRAS',bold:true,margin:[0,6,0,4]});
+    content.push(tabla(H_ORIGEN,W_ORIGEN,D.origSueltas.map(filaOrigen)));
+  }
+  if(D.destConTiempo.length){
+    content.push({text:`A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}`,fontSize:11,margin:[0,6,0,4]});
+    const filasG=[]; agruparPorEspacio(D.destConTiempo).forEach(g=>filaDestinoGrupo(g,filasG));
+    content.push(tabla(H_DESTINO,W_DESTINO,filasG));
+  }
+  if(D.destSueltas.length){
+    content.push({text:`A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}`,fontSize:11,margin:[0,6,0,4]});
+    const filasG=[]; agruparPorEspacio(D.destSueltas).forEach(g=>filaDestinoGrupo(g,filasG));
+    content.push(tabla(H_DESTINO,W_DESTINO,filasG));
+  }
+  content.push({text:LOCALIDAD,bold:true,alignment:'right',pageBreak:'before',margin:[0,0,0,10]});
+  content.push({text:'VISTO',bold:true,margin:[0,0,0,8]});
+  content.push({text:[sang(22),{text:`La necesidad de reorganizar la POF de la escuela, y reasignar horas de los CUPOF y las plazas correspondientes, a la estructura curricular vigente por ${RES_MARCO}; y`}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  content.push({text:'CONSIDERANDO:',bold:true,margin:[0,0,0,8]});
+  content.push({text:[sang(22),{text:`Que es necesario reasignar los CUPOF y las plazas a la nueva estructura curricular aprobada por ${RES_MARCO}.`}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  content.push({text:[sang(22),{text:'Que la misma se procederá a realizar por medio de Actas de Acuerdo y Disposiciones AD referéndum de la Dirección de Nivel Secundario a través de las cuales el/la docente acepta la reubicación de las horas cátedra en que se encontraba designado/a, a las vigentes según el Plan de estudios contemplado en la resolución citada en el visto;'}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  content.push({text:[sang(22),{text:`Que por este instrumento legal se validará la reasignación ${D.tiempo?`del ${D.tiempo.tipo} ${D.tiempo.hs} hs.`:'de horas cátedra'} del/de la ${D.tratamiento} `},{text:D.docente,bold:true},{text:` -DNI N°: ${D.dni} a horas cátedras del Plan de estudios vigente.`}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  content.push({text:[sang(22),{text:'Que corresponde dictar el acto administrativo pertinente que efectivice la medida tomada;'}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  content.push({text:[sang(22),{text:'Por ello;'}],fontSize:11,alignment:'justify',margin:[0,0,0,8]});
+  content.push({text:DIRECTORA,bold:true,alignment:'center',margin:[0,0,0,4]});
+  content.push({text:ESCUELA_APODO,bold:true,alignment:'center',margin:[0,0,0,4]});
+  content.push({text:DIRECTORA_NOMBRE,bold:true,alignment:'center',margin:[0,0,0,4]});
+  content.push({text:'DISPONE',bold:true,alignment:'center',margin:[0,0,0,8]});
+  content.push({columns:[{width:mm(30),text:'ARTICULO 1º:',bold:true,fontSize:11},{width:'*',text:`Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${D.tiempo?`del ${D.tiempo.tipo} de ${D.tiempo.hs} hs.`:'de horas cátedra'} del/de la ${D.tratamiento} ${D.docente} -DNI N°: ${D.dni} según se detalla:`,fontSize:11,alignment:'justify'}],margin:[0,0,0,8]});
+  if(D.destConTiempo.length) content.push(tabla(H_RESTIEMPO,W_RESTIEMPO,D.destConTiempo.map(filaResumenTiempo)));
+  if(D.destSueltas.length){
+    content.push({text:`Y la reasignación de ${numALetras(D.hsSueltas)} (${D.hsSueltas}) horas cátedra${D.destSueltas[0]?` al ${D.destSueltas[0].plan}`:''} ${RES_MARCO}`,fontSize:11,margin:[0,4,0,4]});
+    content.push(tabla(H_RESSUELTA,W_RESSUELTA,D.destSueltas.map(filaResumenSuelta)));
+  }
+  content.push({text:'-SUJETO A APLICACIÓN DE ART. 21-',fontSize:11,margin:[0,4,0,8]});
+  content.push({columns:[{width:mm(30),text:'ARTICULO 2º:',bold:true,fontSize:11},{width:'*',text:'Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.',fontSize:11,alignment:'justify'}],margin:[0,0,0,16]});
+  content.push({text:'DISPOSICIÓN Nº _________/',fontSize:11,margin:[0,0,0,16]});
+  content.push({text:'NOTIFICADO: …………………………………………………',fontSize:11});
+  return{
+    pageSize:{width:mm(215.9),height:mm(355.6)},
+    pageMargins:[mm(30),mm(25),mm(10),mm(25)],
+    defaultStyle:{font:'Roboto'},
+    content,
+  };
+}
+/** Sigue usada por la Planilla de Asignación de Horas imprimible (genPlanillaAsignacion), que no se migró
+ *  esta ronda — la usuaria solo pidió el cambio para las Actas. */
 function bajarDoc(nombre,html){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/msword'}));a.download=nombre;a.click();}
-function bajarPDF(nombre,html){
-  if(typeof html2pdf==='undefined')return msg('No cargó la librería de PDF');
-  const el=document.createElement('div');el.innerHTML=`<style>${ACTA_CSS}</style>`+html;
-  // Formato y márgenes según modelo_disposición.doc: página Oficio/Legal (215.9x355.6mm), márgenes 25mm sup/inf, 30mm izq/der.
-  // pagebreak mode 'css' respeta el salto ".salto" antes de la Disposición.
-  html2pdf().set({filename:nombre,margin:[25,30,25,10],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2},pagebreak:{mode:['css','avoid-all']}}).from(el).save();
-}
 function docentesConDestino(){
   return filas('DOCENTES').map(f=>f[1]).filter(n=>asignacionesDelDocente(n).length>0).sort();
 }
-function genActa(fmt){
+async function genActa(fmt){
   const doc=document.getElementById('gDoc').value;
-  const html=actaHTML(doc);
-  if(fmt==='doc')bajarDoc(`Acta Acuerdo y Disposicion - ${doc}.doc`,envolver(html));
-  else bajarPDF(`Acta Acuerdo y Disposicion - ${doc}.pdf`,html);
+  if(typeof docx==='undefined')return msg('No cargó la librería docx (.docx)');
+  if(fmt==='doc'){
+    const documento=actaDocxDocumento(doc);
+    const blob=await docx.Packer.toBlob(documento);
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Acta Acuerdo y Disposicion - ${doc}.docx`;a.click();
+  } else {
+    if(typeof pdfMake==='undefined')return msg('No cargó la librería de PDF (pdfmake)');
+    await pdfMake.createPdf(actaPdfDocDefinition(doc)).download(`Acta Acuerdo y Disposicion - ${doc}.pdf`);
+  }
   msg('Acta generada: '+doc);
-}
-/** Genera el PDF de una acta como Blob (en vez de bajarlo directo), para meterlo en el ZIP del lote. */
-async function actaPdfBlob(html){
-  const el=document.createElement('div');el.innerHTML=`<style>${ACTA_CSS}</style>`+html;
-  return html2pdf().set({margin:[25,30,25,10],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2},pagebreak:{mode:['css','avoid-all']}}).from(el).outputPdf('blob');
 }
 /** Genera TODAS las actas de golpe, pero como archivos INDIVIDUALES por docente (uno por uno, no un único
  *  archivo con todas juntas) — pedido de la usuaria 06/07/2026 — empaquetados en un solo ZIP para que la
@@ -2163,16 +2292,22 @@ async function actaPdfBlob(html){
  *  con el pedido anterior de feedback de progreso en acciones en lote. */
 async function genActasTodas(fmt){
   if(typeof JSZip==='undefined')return msg('No cargó la librería de ZIP');
+  if(fmt==='doc'&&typeof docx==='undefined')return msg('No cargó la librería docx (.docx)');
+  if(fmt==='pdf'&&typeof pdfMake==='undefined')return msg('No cargó la librería de PDF (pdfmake)');
   const lst=docentesConDestino();
   if(!confirm(`Se generarán ${lst.length} actas, una archivo por docente, dentro de un único ZIP. ¿Continuar?`))return;
   const zip=new JSZip();
   for(let i=0;i<lst.length;i++){
     const d=lst[i];
     msg(`Generando actas… (${i+1}/${lst.length}) ${d}`,60000);
-    const html=actaHTML(d);
     const nombre=`Acta Acuerdo y Disposicion - ${d}`;
-    if(fmt==='doc') zip.file(nombre+'.doc','﻿'+envolver(html));
-    else zip.file(nombre+'.pdf', await actaPdfBlob(html));
+    if(fmt==='doc'){
+      const blob=await docx.Packer.toBlob(actaDocxDocumento(d));
+      zip.file(nombre+'.docx',blob);
+    } else {
+      const blob=await pdfMake.createPdf(actaPdfDocDefinition(d)).getBlob();
+      zip.file(nombre+'.pdf',blob);
+    }
   }
   msg('Comprimiendo ZIP…',60000);
   const blob=await zip.generateAsync({type:'blob'});
@@ -2228,7 +2363,7 @@ function tablaAsignacionHoras(plan,curso,div){
       const esVac=!cupKey(f[iAcu]);
       filasHtml+=`<tr>${pos===0?`<td class="esp" rowspan="${lst.length}" style="${TD_ST}">${celda(esc(c.nom))}</td><td rowspan="${lst.length}" style="${TD_ST}">${celda(c.hs)}</td>`:''}
        <td style="${TD_ST}">${celda(esVac?'—':esc(nombreAsigCanonico(f,iAdo,iAdni)))}</td>
-       <td class="cup" style="${CUP_ST}">${celda(esVac?'<span class="pill falta">VACANTE</span>':esc(f[iAcu]))}</td>
+       <td class="cup" style="${CUP_ST}">${celda(esVac?'<span class="pill falta">VACANTE</span>':esc(f[iAcu]),7)}</td>
        <td style="${TD_ST}">${celda(esc(f[iAh]))}</td>
        <td style="${TD_ST}">${celda(pos===0?est:'')}</td></tr>`;
     });
