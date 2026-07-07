@@ -1894,8 +1894,20 @@ p{text-align:justify;margin:7px 0}.salto{page-break-before:always;break-before:p
  *  width= (además del style, por las dudas) de cada <th> — en vez de <colgroup>, que Word ignora casi
  *  por completo al convertir el HTML a .doc. El atributo width= en las celdas SÍ lo respeta tanto Word
  *  como los navegadores/html2canvas (PDF), así que es la forma más compatible de fijar proporciones. */
+// Word (al convertir el HTML a .doc) NO hereda font-size/padding del <style> dentro de las celdas de
+// tabla — usa su propio estilo de tabla por defecto (fuente más grande, más padding), aunque el body y
+// los <p> sueltos sí toman bien el <style>. Por eso el editable se veía "desconfigurado": texto grande
+// dentro de columnas angostas hacía que valores cortos como "G7" quedaran casi un carácter por línea, y
+// las filas se veían mucho más altas de lo esperado (reportado por la usuaria 07/07/2026 con captura real
+// del .doc). Fix: igual que con el ancho, TODO lo crítico de cada celda (fuente/padding/borde) se repite
+// también como estilo inline en cada <td>/<th> — Word sí respeta estilos inline puestos directo en el
+// elemento, aunque ignore reglas de hoja de estilos para selectores de etiqueta simples (td, th, *).
+const TD_ST='border:1px solid #777;padding:1px 3px;font-size:8pt;font-family:Arial,sans-serif;line-height:1.15;vertical-align:top';
+const TH_ST='background:#d9d9d9;border:1px solid #777;padding:2px 3px;font-size:8pt;font-family:Arial,sans-serif;font-weight:bold;line-height:1.15;vertical-align:middle';
+const CUP_ST='border:1px solid #777;padding:1px 3px;font-size:7pt;font-family:Consolas,monospace;line-height:1.15;vertical-align:top;word-break:break-all';
+const CUP_SPAN_ST='font-family:Consolas,monospace;font-size:7pt;word-break:break-all';
 function filaTh(headers,anchos){
-  return '<tr>'+headers.map((h,i)=>`<th width="${anchos[i]}%" style="width:${anchos[i]}%">${h}</th>`).join('')+'</tr>';
+  return '<tr>'+headers.map((h,i)=>`<th width="${anchos[i]}%" style="width:${anchos[i]}%;${TH_ST}">${h}</th>`).join('')+'</tr>';
 }
 /** Marcador de salto de página específico de Word: además de la clase CSS ".salto" (que ya funciona bien
  *  en PDF/navegador), Word necesita este <br> especial (mso-special-character:line-break combinado con
@@ -2033,36 +2045,44 @@ function actaHTML(docente){
   const materia=materiaDeDocente(docente,espacioRef);
   const tratamiento=materia?`profesor/a de ${esc(materia)}`:'docente';
   const hsSueltas=sumHs(destSueltas);
-  const filaOrigen=o=>`<tr><td>${esc(o.curso)}</td><td>${esc(o.div)}</td><td>${esc(o.carga)}</td><td>${esc(o.espacio)}/${esc(o.plan)}/${esc(o.sit)}/<span class="cup">${esc(o.cupofTxt)}</span></td></tr>`;
+  const filaOrigen=o=>`<tr><td style="${TD_ST}">${esc(o.curso)}</td><td style="${TD_ST}">${esc(o.div)}</td><td style="${TD_ST}">${esc(o.carga)}</td><td style="${TD_ST}">${esc(o.espacio)}/${esc(o.plan)}/${esc(o.sit)}/<span class="cup" style="${CUP_SPAN_ST}">${esc(o.cupofTxt)}</span></td></tr>`;
   // Fila de "reasignaciones": ahora arranca con el Plan (sigla corta, PLAN_MAP) como primera columna —
   // pedido de la usuaria 06/07/2026 para poder identificar el destino sin abrir el CUPOF. La situación de
   // revista mostrada es la del PRIMER item del grupo (todas las CUPOF de un mismo grupo de reasignación
   // pertenecen a la misma designación real), leída de DESIGNACIONES — no una situación genérica del docente.
-  const filaDestinoGrupo=g=>{const n=g.items.length;const planSigla=PLAN_MAP[g.plan]||g.plan;const sitGrupo=g.items[0]?.sit||'';return g.items.map((it,j)=>`<tr>${j===0?
-    `<td rowspan="${n}">${esc(planSigla)}</td><td rowspan="${n}">${esc(g.curso)}</td><td rowspan="${n}">${esc(g.div)}</td><td rowspan="${n}">${esc(g.horasCaja)}</td><td rowspan="${n}">${esc(sitGrupo)}</td><td rowspan="${n}">${esc(g.espacio)}</td>`:''}
-    <td class="cup">${esc(it.origen)}</td><td>${esc(it.hs)}</td></tr>`).join('');};
-  const filaResumenTiempo=r=>`<tr><td class="cup">${esc(r.origen)}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td><td>${esc(r.turno||'')}</td></tr>`;
-  const filaResumenSuelta=r=>`<tr><td class="cup">${r.origenes.map(o=>`${esc(o.texto)}${o.instrumento?'<br>'+esc(o.instrumento):''}`).join('<br>')}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td></tr>`;
+  // Cada grupo (una combinación curso/división con sus CUPOF de origen agrupadas por rowspan) se envuelve
+  // en su propio <tbody style="page-break-inside:avoid">. Sin esto, si el salto de página automático caía
+  // A MITAD del rowspan (entre dos <tr> del mismo grupo), la fila continuada en la página siguiente perdía
+  // las celdas fusionadas (Plan/Curso/Div/Horas/Sit.Revista/Espacio) y se veía "cortada"/desalineada —
+  // exactamente lo reportado por la usuaria 07/07/2026 al comparar el .doc real con la reconstrucción.
+  // Con page-break-inside:avoid en el <tbody>, el grupo entero salta completo a la página siguiente en vez
+  // de partirse (misma lógica que .bloqueAsig en la Planilla de Asignación de Horas).
+  const filaDestinoGrupo=g=>{const n=g.items.length;const planSigla=PLAN_MAP[g.plan]||g.plan;const sitGrupo=g.items[0]?.sit||'';return `<tbody style="page-break-inside:avoid">${g.items.map((it,j)=>`<tr>${j===0?
+    `<td rowspan="${n}" style="${TD_ST}">${esc(planSigla)}</td><td rowspan="${n}" style="${TD_ST}">${esc(g.curso)}</td><td rowspan="${n}" style="${TD_ST}">${esc(g.div)}</td><td rowspan="${n}" style="${TD_ST}">${esc(g.horasCaja)}</td><td rowspan="${n}" style="${TD_ST}">${esc(sitGrupo)}</td><td rowspan="${n}" style="${TD_ST}">${esc(g.espacio)}</td>`:''}
+    <td class="cup" style="${CUP_ST}">${esc(it.origen)}</td><td style="${TD_ST}">${esc(it.hs)}</td></tr>`).join('')}</tbody>`;};
+  const filaResumenTiempo=r=>`<tr><td class="cup" style="${CUP_ST}">${esc(r.origen)}</td><td style="${TD_ST}">${esc(r.espacio)}</td><td style="${TD_ST}">${esc(r.hs)}</td><td style="${TD_ST}">${esc(r.curso)}</td><td style="${TD_ST}">${esc(r.div)}</td><td style="${TD_ST}">${esc(r.turno||'')}</td></tr>`;
+  const filaResumenSuelta=r=>`<tr><td class="cup" style="${CUP_ST}">${r.origenes.map(o=>`${esc(o.texto)}${o.instrumento?'<br>'+esc(o.instrumento):''}`).join('<br>')}</td><td style="${TD_ST}">${esc(r.espacio)}</td><td style="${TD_ST}">${esc(r.hs)}</td><td style="${TD_ST}">${esc(r.curso)}</td><td style="${TD_ST}">${esc(r.div)}</td></tr>`;
 
+  const TBL_ST='border-collapse:collapse;width:100%;table-layout:fixed';
   const bloqueTiempo=tiempo?`<p class="tiempoHead">${esc(tiempo.tipo)}-${esc(tiempo.hs)} horas- ${esc(tiempo.instrumento)}</p>
-   <table>${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
-   ${origConTiempo.map(filaOrigen).join('')||'<tr><td colspan="4">(sin datos)</td></tr>'}</table>`:'';
+   <table style="${TBL_ST}">${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
+   ${origConTiempo.map(filaOrigen).join('')||`<tr><td colspan="4" style="${TD_ST}">(sin datos)</td></tr>`}</table>`:'';
   const bloqueSueltas=origSueltas.length?`<p style="font-weight:bold;margin:10px 0 4px">HORAS CÁTEDRAS</p>
-   <table>${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
+   <table style="${TBL_ST}">${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
    ${origSueltas.map(filaOrigen).join('')}</table>`:'';
   // Reasignaciones: Plan(sigla), Curso, División, Horas (antes "carga horaria"/"CARGA HORA" — se acorta
   // el título para reducir el ancho de esa columna), Sit. Revista, Espacio Curricular Actual (antes decía
   // "Curso actual"), CUPOF, Hs — pedido explícito de la usuaria 06/07/2026.
   const aceptaTiempo=destConTiempo.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table>${filaTh(['Plan','Curso','Div','Horas','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs'],[7,7,6,7,11,24,30,8])}
+   <table style="${TBL_ST}">${filaTh(['Plan','Curso','Div','Horas','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs'],[7,7,6,7,11,24,30,8])}
    ${agruparPorEspacio(destConTiempo).map(filaDestinoGrupo).join('')}</table>`:'';
   const aceptaSueltas=destSueltas.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table>${filaTh(['Plan','Curso','Div','Horas','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs'],[7,7,6,7,11,24,30,8])}
+   <table style="${TBL_ST}">${filaTh(['Plan','Curso','Div','Horas','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs'],[7,7,6,7,11,24,30,8])}
    ${agruparPorEspacio(destSueltas).map(filaDestinoGrupo).join('')}</table>`:'';
-  const resumenTiempo=destConTiempo.length?`<table>${filaTh(['CUPOF:HISTÓRICAS','REASIGNADO EN','hs','curso','DIV','TURNO'],[26,30,8,10,8,18])}
+  const resumenTiempo=destConTiempo.length?`<table style="${TBL_ST}">${filaTh(['CUPOF:HISTÓRICAS','REASIGNADO EN','hs','curso','DIV','TURNO'],[26,30,8,10,8,18])}
    ${destConTiempo.map(filaResumenTiempo).join('')}</table>`:'';
   const resumenSueltas=destSueltas.length?`<p>Y la reasignación de ${numALetras(hsSueltas)} (${hsSueltas}) horas cátedra${destSueltas[0]?` al ${esc(destSueltas[0].plan)}`:''} ${RES_MARCO}</p>
-   <table>${filaTh(['CUPOF-Resolución','REASIGNADO','HORAS','CURSO','DIV'],[32,32,8,14,14])}
+   <table style="${TBL_ST}">${filaTh(['CUPOF-Resolución','REASIGNADO','HORAS','CURSO','DIV'],[32,32,8,14,14])}
    ${destSueltas.map(filaResumenSuelta).join('')}</table>`:'';
 
   return `<h1>ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES</h1>
@@ -2181,18 +2201,18 @@ function tablaAsignacionHoras(plan,curso,div){
     const asg=lst.reduce((a,{f})=>a+(cupKey(f[iAcu])?unNum(f[iAh]):0),0);
     const falta=c.hs-asg;
     const est=(asg===c.hs?'<span class="pill ok">completo</span>':asg<c.hs?`<span class="pill falta">faltan ${falta}</span>`:`<span class="pill exceso">excede ${asg-c.hs}</span>`)+(c.fuera?' <span class="pill info">fuera de caja</span>':'');
-    if(!lst.length){ filasHtml+=`<tr><td class="esp">${esc(c.nom)}</td><td>${c.hs}</td><td colspan="2" class="mini">— sin asignaciones —</td><td>${est}</td></tr>`; return; }
+    if(!lst.length){ filasHtml+=`<tr><td class="esp" style="${TD_ST}">${esc(c.nom)}</td><td style="${TD_ST}">${c.hs}</td><td colspan="2" class="mini" style="${TD_ST}">— sin asignaciones —</td><td style="${TD_ST}">${est}</td></tr>`; return; }
     lst.forEach(({f},pos)=>{
       const esVac=!cupKey(f[iAcu]);
-      filasHtml+=`<tr>${pos===0?`<td class="esp" rowspan="${lst.length}">${esc(c.nom)}</td><td rowspan="${lst.length}">${c.hs}</td>`:''}
-       <td>${esVac?'—':esc(nombreAsigCanonico(f,iAdo,iAdni))}</td>
-       <td class="cup">${esVac?'<span class="pill falta">VACANTE</span>':esc(f[iAcu])}</td>
-       <td>${esc(f[iAh])}</td>
-       <td>${pos===0?est:''}</td></tr>`;
+      filasHtml+=`<tr>${pos===0?`<td class="esp" rowspan="${lst.length}" style="${TD_ST}">${esc(c.nom)}</td><td rowspan="${lst.length}" style="${TD_ST}">${c.hs}</td>`:''}
+       <td style="${TD_ST}">${esVac?'—':esc(nombreAsigCanonico(f,iAdo,iAdni))}</td>
+       <td class="cup" style="${CUP_ST}">${esVac?'<span class="pill falta">VACANTE</span>':esc(f[iAcu])}</td>
+       <td style="${TD_ST}">${esc(f[iAh])}</td>
+       <td style="${TD_ST}">${pos===0?est:''}</td></tr>`;
     });
   });
   return `<div class="bloqueAsig"><h3>${esc(PLAN_INV[plan]||plan)} — ${esc(curso)} ${esc(div)}</h3>
-   <table>${filaTh(['ESPACIO','HS CAJA','DOCENTE','CUPOF','HS ASIG.','ESTADO'],[24,8,20,26,8,14])}${filasHtml}</table></div>`;
+   <table style="border-collapse:collapse;width:100%;table-layout:fixed">${filaTh(['ESPACIO','HS CAJA','DOCENTE','CUPOF','HS ASIG.','ESTADO'],[24,8,20,26,8,14])}${filasHtml}</table></div>`;
 }
 function planillaAsignacionHTML(){
   let cuerpo='';
