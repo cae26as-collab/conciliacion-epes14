@@ -326,8 +326,9 @@ function rConciliador(){
   v.innerHTML=`<div class="card" style="margin-bottom:10px;padding:0;border:0;background:none">
     <span class="subtab ${conTab==='horas'?'act':''}" onclick="conTab='horas';rConciliador()">Asignación de Horas</span>
     <span class="subtab ${conTab==='tiempos'?'act':''}" onclick="conTab='tiempos';rConciliador()">Asignación para crear Tiempos</span>
+    <span class="subtab ${conTab==='funciones'?'act':''}" onclick="conTab='funciones';rConciliador()">Funciones Asignadas</span>
   </div><div id="conBody"></div>`;
-  if(conTab==='horas') rConciliadorHoras(); else rConciliadorTiempos();
+  if(conTab==='horas') rConciliadorHoras(); else if(conTab==='tiempos') rConciliadorTiempos(); else rConciliadorFunciones();
 }
 function rConciliadorHoras(){
   const v=document.getElementById('conBody');
@@ -614,6 +615,132 @@ async function guardarAsig(espN,falta){
   try{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));addEsp=null;addDoc='';
     await sincronizarParciales(cupKey(cup));
     msg('Asignado');rConciliador();}
+  catch(e){msg('Error: '+e.message);}
+}
+
+/* ============ FUNCIONES ASIGNADAS (horas de CUPOF que quedan con saldo disponible) ============
+ * Pedido de la usuaria 07/07/2026: muchas CUPOF quedan con fracciones de carga sin usar. Esta pestaña
+ * lista, por docente, las CUPOF donde le queda saldo disponible (mismo cómputo que el resto de la app:
+ * cargasCupof(), CUPOF propias del docente vía designacionesDelDocente — DNI, nunca por nombre) y permite
+ * asignarle a esas horas una "Función Asignada" (texto libre con autocompletado de una lista que se va
+ * agrandando sola, guardada en la hoja FUNCIONES). La asignación se guarda como una fila más de
+ * ASIGNACIONES —igual que cualquier reasignación curricular, pero sin CURSO ni DIV., con el TURNO/PLAN de
+ * la CUPOF de origen y OBS.="FUNCIÓN ASIGNADA" para poder identificarla— por lo que entra sola en el saldo
+ * disponible de todos lados y en las Actas/Disposiciones (destinosDeDocente/agruparPorEspacio ya la toman
+ * como una asignación más: no hizo falta tocar esa lógica). */
+let funcDocSel='';
+function docentesConDisponibilidad(){
+  const cargas=cargasCupof(); const iDcup=ix('DESIGNACIONES','CUPOF');
+  if(iDcup===-1)return [];
+  return filas('DOCENTES').map(f=>f[1]).filter(doc=>
+    designacionesDelDocente(doc).some(f=>{const c=cargas[cupKey(f[iDcup])];return c&&(c.carga-c.usado)>0.001;})
+  ).sort();
+}
+function cupofDisponiblesDeDocente(docente){
+  const cargas=cargasCupof(); const iDcup=ix('DESIGNACIONES','CUPOF');
+  if(iDcup===-1)return [];
+  const vistos=new Set(), out=[];
+  designacionesDelDocente(docente).forEach(f=>{
+    const cup=f[iDcup], k=cupKey(cup); if(!k||vistos.has(k))return; vistos.add(k);
+    const c=cargas[k]; if(!c||(c.carga-c.usado)<=0.001)return;
+    out.push({cupTexto:cup,key:k,carga:c.carga,usado:c.usado,libre:Math.round((c.carga-c.usado)*10)/10,fila:c.fila});
+  });
+  return out;
+}
+/** Si este docente ya tiene una "Función Asignada" guardada contra esta CUPOF (marcada en OBS.), la
+ *  devuelve junto con su índice en filas('ASIGNACIONES') para poder editarla/borrarla. */
+function funcionExistente(docente,cupTexto){
+  const docRow=filas('DOCENTES').find(f=>f[1]===docente); const dni=docRow?String(docRow[0]).replace(/\D/g,''):'';
+  if(!dni)return null;
+  const iAdni=ix('ASIGNACIONES','DNI'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAo=ix('ASIGNACIONES','OBS.');
+  const k=cupKey(cupTexto);
+  const arr=filas('ASIGNACIONES');
+  for(let i=0;i<arr.length;i++){
+    const f=arr[i];
+    if(String(f[iAdni]||'').replace(/\D/g,'')===dni&&cupKey(f[iAcu])===k&&String(f[iAo]||'').includes('FUNCIÓN ASIGNADA'))return{i,f};
+  }
+  return null;
+}
+function rConciliadorFunciones(){
+  const v=document.getElementById('conBody');
+  if(!BD['FUNCIONES']){
+    v.innerHTML=`<div class="card"><p class="problema">Falta crear la hoja <b>FUNCIONES</b> en la base: desde el editor de Apps Script correr una vez <code>crearHojaFunciones()</code> (o <code>correrTodoElMantenimiento()</code>) y volver a <i>Implementar &gt; Nueva versión</i>. Sin ese paso esta pestaña no puede guardar nada.</p></div>`;
+    return;
+  }
+  const docentes=docentesConDisponibilidad();
+  const opcionesFunc=filas('FUNCIONES').map(f=>f[0]).filter(Boolean);
+  let filasHtml='';
+  if(funcDocSel){
+    const cupofs=cupofDisponiblesDeDocente(funcDocSel);
+    if(!cupofs.length){
+      filasHtml='<p class="mini">Este docente no tiene CUPOF con horas disponibles.</p>';
+    } else {
+      const iAh=ix('ASIGNACIONES','HS'), iAp=ix('ASIGNACIONES','PLAN DESTINO');
+      const planesNuevos=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
+      filasHtml=`<div class="tabla-wrap"><table><tr><th>CUPOF</th><th>Hs. disponibles</th><th>Hs a Asignar</th><th>Plan</th><th>Función Asignada</th><th></th></tr>
+      ${cupofs.map(c=>{
+        const ex=funcionExistente(funcDocSel,c.cupTexto);
+        const keyId=c.key.replace(/[^A-Za-z0-9]/g,'_');
+        const hsVal=ex?unNum(ex.f[iAh]):c.libre;
+        const funcVal=ex?(ex.f[ix('ASIGNACIONES','ESPACIO DESTINO')]||''):'';
+        const planVal=ex?(PLAN_MAP[ex.f[iAp]]||''):'';
+        return `<tr><td class="cupofcell">${esc(c.cupTexto)}</td><td>${c.libre}${ex?` <span class="mini">(+${unNum(ex.f[iAh])} ya asignada)</span>`:''}</td>
+        <td><input id="fh_${keyId}" type="number" min="0.5" step="0.5" value="${hsVal}" style="width:70px"></td>
+        <td><select id="fp_${keyId}"><option value="">— plan —</option>${planesNuevos.map(p=>`<option ${p===planVal?'selected':''}>${p}</option>`).join('')}</select></td>
+        <td><input id="ff_${keyId}" list="funcOpts" value="${esc(funcVal)}" style="min-width:220px" placeholder="Escribir o elegir…"></td>
+        <td><button class="b mini" onclick="accion(this,()=>guardarFuncion(${JSON.stringify(c.cupTexto)},'${keyId}'))">💾 ${ex?'Editar':'Guardar'}</button>
+        ${ex?` <button class="b mini sec" onclick="accion(this,()=>borrarFuncion(${ex.i}))">🗑 Borrar</button>`:''}</td></tr>`;
+      }).join('')}
+      </table></div>`;
+    }
+  }
+  v.innerHTML=`<div class="card">
+    <p class="mini">Elegí un docente para ver sus CUPOF con horas disponibles y asignarles una Función (ej. Acompañamiento de Trayectorias). Se guarda como una asignación más —sin curso ni división— y aparece en Actas/Disposiciones igual que cualquier otra.</p>
+    <label>Docente</label><select id="fDoc"><option value="">— elegir —</option>${docentes.map(d=>`<option ${d===funcDocSel?'selected':''}>${esc(d)}</option>`).join('')}</select>
+    <datalist id="funcOpts">${opcionesFunc.map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
+    ${filasHtml}
+  </div>`;
+  document.getElementById('fDoc').onchange=e=>{funcDocSel=e.target.value;rConciliadorFunciones();};
+}
+async function guardarFuncion(cupTexto,keyId){
+  const docente=funcDocSel; if(!docente)return msg('Elegí un docente');
+  const hsInput=document.getElementById('fh_'+keyId), funcInput=document.getElementById('ff_'+keyId), planInput=document.getElementById('fp_'+keyId);
+  let hs=parseFloat(hsInput.value)||0;
+  const funcion=(funcInput.value||'').trim();
+  const planNuevo=planInput.value;
+  if(!planNuevo)return msg('Elegí el Plan destino');
+  if(!funcion)return msg('Escribí o elegí una Función Asignada');
+  const cargas=cargasCupof(); const k=cupKey(cupTexto); const c=cargas[k];
+  if(!c)return msg('Esta CUPOF ya no tiene carga nominal (revisá el Validador)');
+  const existente=funcionExistente(docente,cupTexto);
+  const propio=existente?unNum(existente.f[ix('ASIGNACIONES','HS')]):0;
+  const libre=Math.round((c.carga-c.usado+propio)*10)/10;
+  if(hs<=0)return msg('Las horas deben ser mayores a 0 (para quitar usá 🗑 Borrar)');
+  if(hs>libre){hs=libre;msg('Ajustado a '+hs+' hs (saldo disponible de la CUPOF)');}
+  const yaExisteFuncion=filas('FUNCIONES').some(f=>String(f[0]).trim().toLowerCase()===funcion.toLowerCase());
+  if(!yaExisteFuncion){
+    try{await apiPost({action:'crear',entidad:'FUNCIONES',valores:[funcion]});BD['FUNCIONES'].filas.push([funcion]);}
+    catch(e){return msg('No se pudo guardar la Función nueva: '+e.message);}
+  }
+  const docRow=filas('DOCENTES').find(x=>x[1]===docente);
+  const cFila=c.fila, iCturno=ix('CUPOF','TURNO');
+  const aC=cols('ASIGNACIONES');
+  const vals=aC.map(col=>({'FUENTE':'app (función)','PLAN DESTINO':PLAN_INV[planNuevo]||planNuevo,'CURSO':'','DIV.':'',
+    'TURNO':cFila?cFila[iCturno]:'','ESPACIO DESTINO':funcion,'HS':hs,'CUPOF (texto origen)':cupTexto,
+    'DOCENTE':docente,'DNI':docRow?docRow[0]:'','OBS.':'FUNCIÓN ASIGNADA'}[col]??''));
+  try{
+    if(existente){await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:existente.i+1,valores:vals});BD['ASIGNACIONES'].filas[existente.i]=vals.map(String);}
+    else{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));}
+    await sincronizarParciales(k);
+    msg('Función asignada');rConciliadorFunciones();
+  }catch(e){msg('Error: '+e.message);}
+}
+async function borrarFuncion(i){
+  if(!confirm('¿Quitar esta Función Asignada?'))return;
+  const iCu=ix('ASIGNACIONES','CUPOF (texto origen)'); const clave=cupKey(BD['ASIGNACIONES'].filas[i][iCu]);
+  try{await apiPost({action:'borrar',entidad:'ASIGNACIONES',fila:i+1});BD['ASIGNACIONES'].filas.splice(i,1);
+    await sincronizarParciales(clave);
+    msg('Quitada');rConciliadorFunciones();}
   catch(e){msg('Error: '+e.message);}
 }
 async function repararBase(){
@@ -2057,10 +2184,32 @@ const H_ORIGEN=['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDI
 const W_ORIGEN=[8,6,10,76];
 const H_DESTINO=['Plan','Curso','Div','Hs.','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs.'];
 const W_DESTINO=[9,5,4,6,9,20,42,5];
-const H_RESTIEMPO=['CUPOF:HISTÓRICAS','REASIGNADO EN','hs','curso','DIV','TURNO'];
-const W_RESTIEMPO=[26,30,8,10,8,18];
-const H_RESSUELTA=['CUPOF-Resolución','REASIGNADO','HORAS','CURSO','DIV'];
-const W_RESSUELTA=[32,32,8,14,14];
+/* Antes había dos tablas-resumen distintas (H_RESTIEMPO para reasignaciones "con tiempo" y H_RESSUELTA para
+ * "sueltas") con columnas diferentes (la de sueltas no tenía Turno). Unificadas a pedido de la usuaria
+ * 07/07/2026: ambas tablas de la Disposición deben tener EXACTAMENTE las mismas columnas/encabezados. */
+const H_RESUMEN=['CUPOF Históricos - Instrumento','Reasignado en','Hs.','Curso','Div.','Turno'];
+const W_RESUMEN=[41,32,5,7,5,10];
+/* Geometría real de página (debe coincidir con el margin de la sección del Document más abajo). Se usa para
+ * convertir los anchos % de columna a valores absolutos en DXA (twips) y fijar así el tblGrid de cada tabla.
+ * CAUSA RAÍZ del bug "todas las columnas quedan con el mismo ancho" reportado 07/07/2026: si al Table de
+ * docx.js no se le pasa columnWidths explícito, genera un tblGrid con todas las columnas iguales (ver su
+ * fuente: default columnWidths = Array(nCols).fill(100)) — el ancho % puesto solo en cada celda (tcW) es
+ * apenas una sugerencia que Word ignora frente al tblGrid. */
+const PAGINA_MM={ancho:215.9,alto:355.6,arriba:25,abajo:25,izq:30,der:20};
+const ANCHO_UTIL_MM=PAGINA_MM.ancho-PAGINA_MM.izq-PAGINA_MM.der;
+function mmATwip(mm){return Math.round(mm*56.6929133858);}
+function anchoTwip(pct){return mmATwip(ANCHO_UTIL_MM*pct/100);}
+/* CAUSA RAÍZ del bug "texto de las celdas ilegible/superpuesto" reportado 07/07/2026: spacing.line de docx.js
+ * espera el alto de línea en VEINTEAVOS DE PUNTO (igual al w:line de OOXML), pero el código anterior le pasaba
+ * el tamaño de fuente en MEDIOS PUNTOS (la unidad de TextRun.size) más una constante (p.ej. line:34 para una
+ * fuente de 7pt) — quedaba ~5-6 veces más chico de lo necesario (1.7pt de alto de línea real). Con
+ * lineRule:'exact' Word fuerza esa altura sin importar el contenido, aplastando/superponiendo el texto.
+ * Fórmula correcta: puntos de fuente (size en medios-puntos /2) + un margen mínimo de interlineado, todo *20. */
+function lineaExacta(sizeMediosPuntos,interlineadoPt){
+  interlineadoPt=interlineadoPt===undefined?1.5:interlineadoPt;
+  return Math.round((sizeMediosPuntos/2+interlineadoPt)*20);
+}
+const CELDA_MARGENES={top:20,bottom:20,left:80,right:80};
 
 /** Arma el .docx real del acta (docx.js) para un docente. Devuelve un docx.Document listo para Packer. */
 function actaDocxDocumento(docente){
@@ -2069,25 +2218,31 @@ function actaDocxDocumento(docente){
   const FONT='Arial';
   const txt=(t,o={})=>new TextRun({text:String(t??''),font:o.font||FONT,size:o.size||22,bold:!!o.bold});
   function celdaP(text,{size=16,bold=false,font=FONT}={}){
-    return new Paragraph({spacing:{before:0,after:0,line:size+22,lineRule:'exact'},children:[new TextRun({text:String(text??''),font,size,bold})]});
+    return new Paragraph({spacing:{before:0,after:0,line:lineaExacta(size),lineRule:'exact'},children:[new TextRun({text:String(text??''),font,size,bold})]});
   }
   function celda(text,{width,rowSpan,size=16,bold=false,font=FONT,header=false}={}){
-    return new TableCell({width,rowSpan,verticalAlign:VerticalAlign.TOP,margins:{top:20,bottom:20,left:80,right:80},
+    return new TableCell({width,rowSpan,verticalAlign:VerticalAlign.TOP,margins:CELDA_MARGENES,
       shading:header?{fill:'D9D9D9'}:undefined,children:[celdaP(text,{size,bold:bold||header,font})]});
   }
   function fila(cells){return new TableRow({children:cells});}
   function encabezado(headers,anchos){
-    return fila(headers.map((h,i)=>celda(h,{width:{size:anchos[i],type:WidthType.PERCENTAGE},header:true})));
+    return fila(headers.map((h,i)=>celda(h,{width:{size:anchoTwip(anchos[i]),type:WidthType.DXA},header:true})));
   }
   function tabla(headers,anchos,filas){
-    return new Table({width:{size:100,type:WidthType.PERCENTAGE},layout:TableLayoutType.FIXED,rows:[encabezado(headers,anchos),...filas]});
+    const cw=anchos.map(anchoTwip),totalW=cw.reduce((a,b)=>a+b,0);
+    return new Table({width:{size:totalW,type:WidthType.DXA},layout:TableLayoutType.FIXED,columnWidths:cw,rows:[encabezado(headers,anchos),...filas]});
   }
   function filaOrigen(o){
-    const cel=new TableCell({width:{size:76,type:WidthType.PERCENTAGE},verticalAlign:VerticalAlign.TOP,margins:{top:20,bottom:20,left:80,right:80},children:[
-      new Paragraph({spacing:{before:0,after:0,line:38,lineRule:'exact'},children:[new TextRun({text:`${nombreEspacio(o.espacio)}/${nombrePlan(o.plan)}/${sentenceCase(o.sit)}`,font:FONT,size:16})]}),
-      new Paragraph({spacing:{before:0,after:0,line:34,lineRule:'exact'},children:[new TextRun({text:o.cupofTxt,font:'Consolas',size:14})]}),
+    const cel=new TableCell({width:{size:anchoTwip(W_ORIGEN[3]),type:WidthType.DXA},verticalAlign:VerticalAlign.TOP,margins:CELDA_MARGENES,children:[
+      new Paragraph({spacing:{before:0,after:0,line:lineaExacta(16),lineRule:'exact'},children:[new TextRun({text:`${nombreEspacio(o.espacio)}/${nombrePlan(o.plan)}/${sentenceCase(o.sit)}`,font:FONT,size:16})]}),
+      new Paragraph({spacing:{before:0,after:0,line:lineaExacta(14),lineRule:'exact'},children:[new TextRun({text:o.cupofTxt,font:'Consolas',size:14})]}),
     ]});
-    return fila([celda(o.curso,{width:{size:8,type:WidthType.PERCENTAGE}}),celda(o.div,{width:{size:6,type:WidthType.PERCENTAGE}}),celda(o.carga,{width:{size:10,type:WidthType.PERCENTAGE}}),cel]);
+    return fila([
+      celda(o.curso,{width:{size:anchoTwip(W_ORIGEN[0]),type:WidthType.DXA}}),
+      celda(o.div,{width:{size:anchoTwip(W_ORIGEN[1]),type:WidthType.DXA}}),
+      celda(o.carga,{width:{size:anchoTwip(W_ORIGEN[2]),type:WidthType.DXA}}),
+      cel,
+    ]);
   }
   function filaDestinoGrupo(g){
     const n=g.items.length;
@@ -2095,38 +2250,35 @@ function actaDocxDocumento(docente){
     const sitGrupo=sentenceCase(g.items[0]?.sit||'');
     return g.items.map((it,j)=>fila([
       ...(j===0?[
-        celda(planSigla,{width:{size:9,type:WidthType.PERCENTAGE},rowSpan:n}),
-        celda(g.curso,{width:{size:5,type:WidthType.PERCENTAGE},rowSpan:n}),
-        celda(g.div,{width:{size:4,type:WidthType.PERCENTAGE},rowSpan:n}),
-        celda(g.horasCaja,{width:{size:6,type:WidthType.PERCENTAGE},rowSpan:n}),
-        celda(sitGrupo,{width:{size:9,type:WidthType.PERCENTAGE},rowSpan:n}),
-        celda(sentenceCase(g.espacio),{width:{size:20,type:WidthType.PERCENTAGE},rowSpan:n}),
+        celda(planSigla,{width:{size:anchoTwip(W_DESTINO[0]),type:WidthType.DXA},rowSpan:n}),
+        celda(g.curso,{width:{size:anchoTwip(W_DESTINO[1]),type:WidthType.DXA},rowSpan:n}),
+        celda(g.div,{width:{size:anchoTwip(W_DESTINO[2]),type:WidthType.DXA},rowSpan:n}),
+        celda(g.horasCaja,{width:{size:anchoTwip(W_DESTINO[3]),type:WidthType.DXA},rowSpan:n}),
+        celda(sitGrupo,{width:{size:anchoTwip(W_DESTINO[4]),type:WidthType.DXA},rowSpan:n}),
+        celda(sentenceCase(g.espacio),{width:{size:anchoTwip(W_DESTINO[5]),type:WidthType.DXA},rowSpan:n}),
       ]:[]),
-      celda(it.origen,{width:{size:42,type:WidthType.PERCENTAGE},size:14,font:'Consolas'}),
-      celda(it.hs,{width:{size:5,type:WidthType.PERCENTAGE}}),
+      celda(it.origen,{width:{size:anchoTwip(W_DESTINO[6]),type:WidthType.DXA},size:14,font:'Consolas'}),
+      celda(it.hs,{width:{size:anchoTwip(W_DESTINO[7]),type:WidthType.DXA}}),
     ]));
   }
-  function filaResumenTiempo(r){
-    return fila([
-      celda(r.origen,{width:{size:26,type:WidthType.PERCENTAGE},size:14,font:'Consolas'}),
-      celda(r.espacio,{width:{size:30,type:WidthType.PERCENTAGE}}),
-      celda(r.hs,{width:{size:8,type:WidthType.PERCENTAGE}}),
-      celda(r.curso,{width:{size:10,type:WidthType.PERCENTAGE}}),
-      celda(r.div,{width:{size:8,type:WidthType.PERCENTAGE}}),
-      celda(r.turno||'',{width:{size:18,type:WidthType.PERCENTAGE}}),
-    ]);
-  }
-  function filaResumenSuelta(r){
-    const cupCell=new TableCell({width:{size:32,type:WidthType.PERCENTAGE},verticalAlign:VerticalAlign.TOP,margins:{top:20,bottom:20,left:80,right:80},
-      children:r.origenes.map(o=>new Paragraph({spacing:{before:0,after:0,line:34,lineRule:'exact'},children:[
+  /** Fila de la tabla-resumen de la Disposición: unificada para reasignaciones "con tiempo" y "sueltas"
+   *  (antes eran dos funciones con columnas distintas). Recorre r.origenes (TODAS las CUPOF de origen de
+   *  esa reasignación, no solo la primera) — antes filaResumenTiempo mostraba r.origen (texto crudo
+   *  concatenado) en vez de iterar como sí hacía filaResumenSuelta; a pedido de la usuaria ambas listan
+   *  ahora cada CUPOF en su propio bloque de 2 líneas (código completo en una línea + instrumento debajo). */
+  function filaResumen(r){
+    const items=(r.origenes&&r.origenes.length)?r.origenes:[{texto:r.origen,instrumento:''}];
+    const cupCell=new TableCell({width:{size:anchoTwip(W_RESUMEN[0]),type:WidthType.DXA},verticalAlign:VerticalAlign.TOP,margins:CELDA_MARGENES,
+      children:items.map(o=>new Paragraph({spacing:{before:0,after:60,line:lineaExacta(14),lineRule:'exact'},children:[
         new TextRun({text:o.texto,font:'Consolas',size:14}),
         ...(o.instrumento?[new TextRun({text:o.instrumento,font:'Consolas',size:14,break:1})]:[]),
       ]}))});
     return fila([cupCell,
-      celda(r.espacio,{width:{size:32,type:WidthType.PERCENTAGE}}),
-      celda(r.hs,{width:{size:8,type:WidthType.PERCENTAGE}}),
-      celda(r.curso,{width:{size:14,type:WidthType.PERCENTAGE}}),
-      celda(r.div,{width:{size:14,type:WidthType.PERCENTAGE}}),
+      celda(r.espacio,{width:{size:anchoTwip(W_RESUMEN[1]),type:WidthType.DXA}}),
+      celda(r.hs,{width:{size:anchoTwip(W_RESUMEN[2]),type:WidthType.DXA}}),
+      celda(r.curso,{width:{size:anchoTwip(W_RESUMEN[3]),type:WidthType.DXA}}),
+      celda(r.div,{width:{size:anchoTwip(W_RESUMEN[4]),type:WidthType.DXA}}),
+      celda(r.turno||'',{width:{size:anchoTwip(W_RESUMEN[5]),type:WidthType.DXA}}),
     ]);
   }
 
@@ -2139,7 +2291,7 @@ function actaDocxDocumento(docente){
   ]}));
   if(D.tiempo){
     hijos.push(new Paragraph({alignment:AlignmentType.CENTER,shading:{fill:'E8E8E8'},spacing:{before:120,after:60},children:[new TextRun({text:`${D.tiempo.tipo}-${D.tiempo.hs} horas- ${D.tiempo.instrumento}`,bold:true,size:22,font:FONT})]}));
-    hijos.push(tabla(H_ORIGEN,W_ORIGEN,D.origConTiempo.length?D.origConTiempo.map(filaOrigen):[fila([celda('(sin datos)',{width:{size:100,type:WidthType.PERCENTAGE}})])]));
+    hijos.push(tabla(H_ORIGEN,W_ORIGEN,D.origConTiempo.length?D.origConTiempo.map(filaOrigen):[fila([celda('(sin datos)',{width:{size:anchoTwip(100),type:WidthType.DXA}})])]));
   }
   if(D.origSueltas.length){
     hijos.push(new Paragraph({spacing:{before:120,after:60},children:[new TextRun({text:'HORAS CÁTEDRAS',bold:true,size:22,font:FONT})]}));
@@ -2172,17 +2324,17 @@ function actaDocxDocumento(docente){
     txt('ARTICULO 1º: ',{bold:true}),
     txt(`Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${D.tiempo?`del ${D.tiempo.tipo} de ${D.tiempo.hs} hs.`:'de horas cátedra'} del/de la ${D.tratamiento} `),txt(D.docente,{bold:true}),txt(` -DNI N°: ${D.dni} según se detalla:`),
   ]}));
-  if(D.destConTiempo.length) hijos.push(tabla(H_RESTIEMPO,W_RESTIEMPO,D.destConTiempo.map(filaResumenTiempo)));
+  if(D.destConTiempo.length) hijos.push(tabla(H_RESUMEN,W_RESUMEN,D.destConTiempo.map(filaResumen)));
   if(D.destSueltas.length){
     hijos.push(new Paragraph({spacing:{before:60,after:60},children:[txt(`Y la reasignación de ${numALetras(D.hsSueltas)} (${D.hsSueltas}) horas cátedra${D.destSueltas[0]?` al ${D.destSueltas[0].plan}`:''} ${RES_MARCO}`)]}));
-    hijos.push(tabla(H_RESSUELTA,W_RESSUELTA,D.destSueltas.map(filaResumenSuelta)));
+    hijos.push(tabla(H_RESUMEN,W_RESUMEN,D.destSueltas.map(filaResumen)));
   }
   hijos.push(new Paragraph({spacing:{before:60,after:120},children:[txt('-SUJETO A APLICACIÓN DE ART. 21-')]}));
   hijos.push(new Paragraph({alignment:AlignmentType.JUSTIFIED,indent:{left:'3cm',hanging:'3cm'},spacing:{after:240},children:[txt('ARTICULO 2º: ',{bold:true}),txt('Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.')]}));
   hijos.push(new Paragraph({spacing:{after:240},children:[txt('DISPOSICIÓN Nº _________/')]}));
   hijos.push(new Paragraph({children:[txt('NOTIFICADO: …………………………………………………')]}));
 
-  return new Document({sections:[{properties:{page:{size:{width:'215.9mm',height:'355.6mm'},margin:{top:'25mm',right:'10mm',bottom:'25mm',left:'30mm'}}},children:hijos}]});
+  return new Document({sections:[{properties:{page:{size:{width:'215.9mm',height:'355.6mm'},margin:{top:'25mm',right:'20mm',bottom:'25mm',left:'30mm'}}},children:hijos}]});
 }
 
 /** Arma el docDefinition de pdfmake (PDF vectorial, texto real seleccionable) para un docente. */
@@ -2212,9 +2364,11 @@ function actaPdfDocDefinition(docente){
       }
     });
   }
-  function filaResumenTiempo(r){return [celda(r.origen,{size:7}),celda(r.espacio),celda(r.hs),celda(r.curso),celda(r.div),celda(r.turno||'')];}
-  function filaResumenSuelta(r){
-    return [{stack:r.origenes.map(o=>({text:o.texto+(o.instrumento?'\n'+o.instrumento:''),fontSize:7})),margin:[2,1,2,1]},celda(r.espacio),celda(r.hs),celda(r.curso),celda(r.div)];
+  /** Unificada con la versión docx: misma columna Turno en ambas tablas, y se listan TODAS las CUPOF de
+   *  origen (r.origenes), no solo r.origen (texto crudo) como hacía antes filaResumenTiempo. */
+  function filaResumen(r){
+    const items=(r.origenes&&r.origenes.length)?r.origenes:[{texto:r.origen,instrumento:''}];
+    return [{stack:items.map(o=>({text:o.texto+(o.instrumento?'\n'+o.instrumento:''),fontSize:7,margin:[0,0,0,3]})),margin:[2,1,2,1]},celda(r.espacio),celda(r.hs),celda(r.curso),celda(r.div),celda(r.turno||'')];
   }
   const content=[];
   content.push({text:'ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES',fontSize:14,bold:true,alignment:'center',margin:[0,0,0,10]});
@@ -2251,10 +2405,10 @@ function actaPdfDocDefinition(docente){
   content.push({text:DIRECTORA_NOMBRE,bold:true,alignment:'center',margin:[0,0,0,4]});
   content.push({text:'DISPONE',bold:true,alignment:'center',margin:[0,0,0,8]});
   content.push({columns:[{width:mm(30),text:'ARTICULO 1º:',bold:true,fontSize:11},{width:'*',text:`Autorizase, ad referéndum de la Dirección de Educación Secundaria, a partir de la Presente, la reasignación ${D.tiempo?`del ${D.tiempo.tipo} de ${D.tiempo.hs} hs.`:'de horas cátedra'} del/de la ${D.tratamiento} ${D.docente} -DNI N°: ${D.dni} según se detalla:`,fontSize:11,alignment:'justify'}],margin:[0,0,0,8]});
-  if(D.destConTiempo.length) content.push(tabla(H_RESTIEMPO,W_RESTIEMPO,D.destConTiempo.map(filaResumenTiempo)));
+  if(D.destConTiempo.length) content.push(tabla(H_RESUMEN,W_RESUMEN,D.destConTiempo.map(filaResumen)));
   if(D.destSueltas.length){
     content.push({text:`Y la reasignación de ${numALetras(D.hsSueltas)} (${D.hsSueltas}) horas cátedra${D.destSueltas[0]?` al ${D.destSueltas[0].plan}`:''} ${RES_MARCO}`,fontSize:11,margin:[0,4,0,4]});
-    content.push(tabla(H_RESSUELTA,W_RESSUELTA,D.destSueltas.map(filaResumenSuelta)));
+    content.push(tabla(H_RESUMEN,W_RESUMEN,D.destSueltas.map(filaResumen)));
   }
   content.push({text:'-SUJETO A APLICACIÓN DE ART. 21-',fontSize:11,margin:[0,4,0,8]});
   content.push({columns:[{width:mm(30),text:'ARTICULO 2º:',bold:true,fontSize:11},{width:'*',text:'Regístrese. Comuníquese a quienes corresponda. Notifíquese y archívese.',fontSize:11,alignment:'justify'}],margin:[0,0,0,16]});
@@ -2262,7 +2416,7 @@ function actaPdfDocDefinition(docente){
   content.push({text:'NOTIFICADO: …………………………………………………',fontSize:11});
   return{
     pageSize:{width:mm(215.9),height:mm(355.6)},
-    pageMargins:[mm(30),mm(25),mm(10),mm(25)],
+    pageMargins:[mm(30),mm(25),mm(20),mm(25)],
     defaultStyle:{font:'Roboto'},
     content,
   };
