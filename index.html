@@ -1299,6 +1299,14 @@ function rValidador(){
   const {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
     instrFormatoMal,instrInconsistente,
     iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,iAdniAud,HD}=calcularValidacion();
+  // Agrupa instrFormatoMal por plan+curso+división+turno (mismo criterio que instrInconsistente) para que
+  // se vea de un vistazo qué filas pertenecen al mismo grupo — pedido de la usuaria 06/07/2026.
+  const gruposFormatoMal={};
+  instrFormatoMal.forEach(({i,f})=>{
+    const k=[f[ix('CUPOF','PLAN')],f[ix('CUPOF','CURSO')],f[ix('CUPOF','DIV.')],f[ix('CUPOF','TURNO')]].join('|');
+    (gruposFormatoMal[k]=gruposFormatoMal[k]||[]).push({i,f});
+  });
+  const gruposFormatoMalArr=Object.entries(gruposFormatoMal).sort((a,b)=>a[0].localeCompare(b[0]));
   v.innerHTML=`<div class="card"><h2>Validador</h2>
    <div class="fila" style="margin-bottom:8px">
     <p class="mini" style="margin:0">${problemas.length} observaciones · ${sinUsar.length} CUPOF con horas disponibles</p>
@@ -1353,15 +1361,31 @@ function rValidador(){
     ${variantesCupof.map(g=>g.items.map((it,idx)=>`<tr>${idx===0?`<td rowspan="${g.items.length}" class="mini">${esc(g.key.replace(/\|/g,' · '))}</td>`:''}<td class="cupofcell">${esc(it.cup)}</td><td>${esc(it.espacio)}</td></tr>`).join('')).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>
   <div class="card"><h3>CUPOF: INSTRUMENTO con formato inesperado (${instrFormatoMal.length})</h3>
-   <p class="mini">El formato habitual es "Res. NNNN/NN" (o similar: siglas + N° + año). Estas filas tienen otra cosa — muchas veces una fecha completa tipo "AAAA-MM-DD 00:00:00" que parece un arrastre desde la columna FECHA. No incluye las CUPOF que pertenecen a un Tiempo (SUFIJO TIEMPO cargado), que se crean con el instrumento propio del Tiempo. Si el grupo (mismo plan+curso+división+turno) de esa CUPOF tiene abajo un valor sugerido, se puede aplicar en lote desde la tabla siguiente; si no, hay que corregirla a mano.</p>
-   ${instrFormatoMal.length?`<div class="tabla-wrap"><table><tr><th>CUPOF</th><th>PLAN</th><th>CURSO/DIV/TURNO</th><th>INSTRUMENTO actual</th><th>FECHA actual</th><th></th></tr>
-    ${instrFormatoMal.map(({f,i})=>`<tr><td class="cupofcell">${esc(f[0])}</td><td>${esc(f[ix('CUPOF','PLAN')])}</td><td>${esc(f[ix('CUPOF','CURSO')])}/${esc(f[ix('CUPOF','DIV.')])}/${esc(f[ix('CUPOF','TURNO')])}</td><td>${esc(f[ix('CUPOF','INSTRUMENTO')]||'(vacío)')}</td><td>${esc(f[ix('CUPOF','FECHA')]||'')}</td><td>${ROL==='admin'?`<a href="#" onclick="editarFila('CUPOF',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
+   <p class="mini">El formato habitual es "Res. NNNN/NN" (o similar: siglas + N° + año). Estas filas tienen otra cosa — muchas veces una fecha completa tipo "AAAA-MM-DD 00:00:00" que parece un arrastre desde la columna FECHA. No incluye las CUPOF que pertenecen a un Tiempo (SUFIJO TIEMPO cargado), que se crean con el instrumento propio del Tiempo. Agrupadas por plan+curso+división+turno para ver de un vistazo qué filas son "hermanas". Si el grupo tiene un valor sugerido, se puede aplicar en lote desde la tabla de abajo; si no, hay que corregirla a mano.</p>
+   ${gruposFormatoMalArr.length?`<div class="tabla-wrap"><table><tr><th>PLAN · CURSO/DIV/TURNO</th><th>CUPOF</th><th>INSTRUMENTO actual</th><th>FECHA actual</th><th></th></tr>
+    ${gruposFormatoMalArr.map(([k,items])=>items.map(({f,i},idx)=>`<tr>${idx===0?`<td rowspan="${items.length}" class="mini">${esc(k.replace(/\|/g,' · '))}</td>`:''}<td class="cupofcell">${esc(f[0])}</td><td>${esc(f[ix('CUPOF','INSTRUMENTO')]||'(vacío)')}</td><td>${esc(f[ix('CUPOF','FECHA')]||'')}</td><td>${ROL==='admin'?`<a href="#" onclick="editarFila('CUPOF',${i});return false">corregir</a>`:''}</td></tr>`).join('')).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
   </div>
   <div class="card"><h3>CUPOF: mismo plan/curso/división/turno con INSTRUMENTO o FECHA distintos (${instrInconsistente.length} grupos)</h3>
-   <p class="mini">Excluye las CUPOF que pertenecen a un Tiempo. Cuando en el grupo hay exactamente un valor con formato válido, se puede aplicar ese valor a todas las filas del grupo de un solo saque con el botón de abajo (nunca se pisa si ya coinciden). Los grupos sin un valor válido claro (ambiguos o sin ninguno) quedan marcados para revisar a mano.</p>
-   ${instrInconsistente.length?`<div class="fila" style="margin:6px 0">${ROL==='admin'&&instrInconsistente.some(g=>g.candidato)?`<button class="b sec mini" onclick="accion(this,repararInstrumentoLote)">✔ Aplicar el valor válido en los grupos que tienen uno solo</button>`:''}</div>
-    <div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO/DIV/TURNO</th><th>Filas</th><th>INSTRUMENTO encontrados</th><th>FECHA encontradas</th><th>Se aplicaría</th></tr>
-    ${instrInconsistente.map(g=>`<tr><td>${esc(g.plan)}</td><td>${esc(g.curso)}/${esc(g.div)}/${esc(g.turno)}</td><td>${g.items.length}</td><td class="mini">${g.instrs.map(esc).join(' / ')}</td><td class="mini">${g.fechas.map(esc).join(' / ')}</td><td>${g.candidato?`<span class="pill ok">${esc(g.candidato[0])} (${esc(g.candidato[1])})</span>`:g.ambiguo?'<span class="pill exceso">2+ valores válidos — revisar a mano</span>':'<span class="pill falta">ningún valor válido en el grupo</span>'}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguno ✔</p>'}
+   <p class="mini">Excluye las CUPOF que pertenecen a un Tiempo. Para cada grupo, elegí de la lista el valor correcto que debe aplicarse a TODAS sus filas (viene preseleccionado cuando hay un único valor con formato válido) o escribilo a mano con "otro". Después tocá el botón de abajo para aplicar de una lo que elegiste en cada grupo — nunca se pisa una fila que ya coincide.</p>
+   ${instrInconsistente.length?`<div class="fila" style="margin:6px 0">${ROL==='admin'?`<button class="b sec mini" onclick="accion(this,aplicarInstrumentoElegido)">✔ Aplicar valores elegidos</button>`:''}</div>
+    <div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO/DIV/TURNO</th><th>Filas</th><th>Valor a aplicar</th></tr>
+    ${instrInconsistente.map((g,idx)=>{
+      const iInstG=ix('CUPOF','INSTRUMENTO'),iFechaG=ix('CUPOF','FECHA');
+      const pares=[...new Map(g.items.map(x=>{
+        const instr=String(x.f[iInstG]||'').trim(), fecha=String(x.f[iFechaG]||'').trim();
+        return [instr+'||'+fecha,{instr,fecha}];
+      })).values()].map(p=>({...p,n:g.items.filter(x=>String(x.f[iInstG]||'').trim()===p.instr&&String(x.f[iFechaG]||'').trim()===p.fecha).length}));
+      return `<tr><td>${esc(g.plan)}</td><td>${esc(g.curso)}/${esc(g.div)}/${esc(g.turno)}</td><td>${g.items.length}</td>
+       <td>${ROL==='admin'?`<select id="gi-${idx}" onchange="document.getElementById('gi-${idx}-manual').style.display=this.value==='OTRO'?'flex':'none'" style="max-width:340px">
+         <option value="">— no cambiar —</option>
+         ${pares.map(p=>`<option value="${esc(p.instr)}||${esc(p.fecha)}" ${g.candidato&&g.candidato[0]===p.instr&&g.candidato[1]===p.fecha?'selected':''}>${esc(p.instr||'(vacío)')} (${esc(p.fecha)||'sin fecha'}) — ${p.n} fila${p.n>1?'s':''}</option>`).join('')}
+         <option value="OTRO">— otro (escribir) —</option>
+        </select>
+        <div id="gi-${idx}-manual" class="fila" style="display:none;margin-top:4px">
+         <input placeholder="Instrumento (ej: Res. 123/45)" id="gi-${idx}-instrManual" style="width:150px">
+         <input placeholder="Fecha (dd/mm/aaaa)" id="gi-${idx}-fechaManual" style="width:100px">
+        </div>`:`<span class="mini">${g.instrs.map(esc).join(' / ')} — ${g.fechas.map(esc).join(' / ')}</span>`}</td></tr>`;
+    }).join('')}</table></div>`:'<p class="mini">Ninguno ✔</p>'}
   </div>`;
 }
 
@@ -1445,23 +1469,37 @@ async function confirmarDniLote(){
   render();
 }
 
-/** Aplica en un solo lote el valor de INSTRUMENTO+FECHA a todas las filas de CUPOF que pertenecen a un
- *  grupo (mismo plan+curso+división+turno, sin Tiempo) donde se detectó EXACTAMENTE un valor válido entre
- *  sus filas (ver instrInconsistente en calcularValidacion): esas filas se llevan al mismo valor que ya
- *  tiene su(s) hermana(s) "sana(s)". Grupos ambiguos (2+ valores válidos distintos) o sin ningún valor
- *  válido se saltan — no hay un candidato claro para pisar, quedan para revisar a mano. Vuelve a chequear
- *  el valor actual de cada fila antes de escribir, por si alguien ya la corrigió mientras tanto. */
-async function repararInstrumentoLote(){
+/** Aplica en un solo lote el valor de INSTRUMENTO+FECHA elegido/tipeado por la usuaria en CADA grupo
+ *  (select "gi-{idx}", o los inputs manuales "gi-{idx}-instrManual"/"gi-{idx}-fechaManual" si eligió
+ *  "otro") a todas las filas de CUPOF de ese grupo (mismo plan+curso+división+turno, sin Tiempo) que no
+ *  coincidan ya. Los selects vienen preseleccionados con el candidato automático cuando el grupo tiene
+ *  un único valor válido (ver instrInconsistente en calcularValidacion), pero acá se puede elegir
+ *  cualquiera de los valores encontrados o escribir uno nuevo — así se resuelven también los grupos
+ *  ambiguos o sin ningún valor válido, que antes quedaban sin forma de aplicar en lote. Los grupos
+ *  dejados en "— no cambiar —" se saltan. Vuelve a chequear el valor actual de cada fila antes de
+ *  escribir, por si alguien ya la corrigió mientras tanto. */
+async function aplicarInstrumentoElegido(){
   const {instrInconsistente}=calcularValidacion();
-  const aplicables=instrInconsistente.filter(g=>g.candidato);
-  if(!aplicables.length)return msg('No hay grupos con un único valor válido para aplicar.');
   const iInst=ix('CUPOF','INSTRUMENTO'), iFecha=ix('CUPOF','FECHA');
-  const totalFilas=aplicables.reduce((a,g)=>a+g.items.filter(x=>String(x.f[iInst]||'').trim()+'||'+String(x.f[iFecha]||'').trim()!==g.candidato.join('||')).length,0);
-  if(!totalFilas)return msg('Ya está todo aplicado — no hay filas para cambiar.');
-  if(!confirm(`Vas a igualar INSTRUMENTO y FECHA en ${totalFilas} filas de CUPOF (repartidas en ${aplicables.length} grupos plan+curso+división+turno), usando el único valor válido que ya tiene alguna CUPOF hermana del mismo grupo. ¿Confirmar?`))return;
+  const cambios=[];
+  instrInconsistente.forEach((g,idx)=>{
+    const sel=document.getElementById('gi-'+idx); if(!sel||!sel.value)return;
+    let instr,fecha;
+    if(sel.value==='OTRO'){
+      instr=(document.getElementById('gi-'+idx+'-instrManual')?.value||'').trim();
+      fecha=(document.getElementById('gi-'+idx+'-fechaManual')?.value||'').trim();
+      if(!instr)return; // eligió "otro" pero no escribió nada: se salta
+    } else {
+      [instr,fecha]=sel.value.split('||');
+    }
+    cambios.push({g,instr,fecha});
+  });
+  if(!cambios.length)return msg('No elegiste ningún valor para aplicar en ningún grupo.');
+  const totalFilas=cambios.reduce((a,c)=>a+c.g.items.filter(x=>String(x.f[iInst]||'').trim()+'||'+String(x.f[iFecha]||'').trim()!==c.instr+'||'+c.fecha).length,0);
+  if(!totalFilas)return msg('Los valores elegidos ya coinciden con lo que está cargado — no hay nada para cambiar.');
+  if(!confirm(`Vas a aplicar el valor elegido en ${cambios.length} grupo(s), afectando ${totalFilas} filas de CUPOF. ¿Confirmar?`))return;
   let ok=0, fallidas=[];
-  for(const g of aplicables){
-    const [instr,fecha]=g.candidato;
+  for(const {g,instr,fecha} of cambios){
     for(const {i,f} of g.items){
       if(String(f[iInst]||'').trim()+'||'+String(f[iFecha]||'').trim()===instr+'||'+fecha)continue; // ya está bien
       const actualEnBD=BD['CUPOF'].filas[i];
@@ -1833,25 +1871,37 @@ function genPlanilla(){
  * 3cm (la línea del encabezado del artículo arranca sin sangría y, si el texto pasa a una 2da línea, esa
  * línea queda sangrada 3cm, igual que en el modelo). */
 const ACTA_CSS=`@page{size:215.9mm 355.6mm;margin:25mm 30mm}
+*{box-sizing:border-box}
 body{font-family:Arial,sans-serif;font-size:12pt;margin:24px}h1{text-align:center;font-size:14pt}
 /* table-layout:fixed + wrap (en vez de white-space:nowrap) para que ninguna celda empuje la tabla más
  * allá del área de impresión — antes los códigos CUPOF largos y los encabezados forzaban overflow y el
  * contenido quedaba cortado en el PDF (reportado por la usuaria 06/07/2026). Los anchos reales de cada
- * columna se fijan con <colgroup> en cada tabla (ver actaHTML). */
+ * columna se fijan con el atributo width= en cada <th> (ver filaTh) en vez de <colgroup>: Word ignora
+ * <colgroup>/<col> casi por completo al convertir el HTML a .doc, y sin box-sizing:border-box el padding
+ * se sumaba al ancho declarado descuadrando todo — ambas cosas causaban el desborde/amontonamiento visto
+ * en los .doc editables (reportado por la usuaria 06/07/2026, segunda ronda). */
 table{border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed}
 th{background:#d9d9d9;color:#000;border:1px solid #777;padding:2px 4px;font-size:8pt;overflow-wrap:break-word;word-break:break-word}
 td{border:1px solid #777;padding:2px 4px;font-size:8pt;overflow-wrap:break-word;word-break:break-word;vertical-align:top}
 td.cup{font-size:7pt;font-family:Consolas,monospace;overflow-wrap:anywhere;word-break:break-all}
 .tiempoHead{background:#e8e8e8;font-weight:bold;text-align:center;padding:4px;border:1px solid #777;margin:10px 0 0}
-p{text-align:justify;margin:7px 0}.salto{page-break-before:always}
+p{text-align:justify;margin:7px 0}.salto{page-break-before:always;break-before:page}
 .actap{text-indent:1cm}
 .consid{text-indent:2.75cm}
 .artic{margin-left:3cm;text-indent:-3cm}
 .hdr{font-weight:bold}`;
-/** Genera un <colgroup> con anchos porcentuales fijos — necesario porque table-layout:fixed reparte el
- *  ancho por igual entre columnas si no se le indica lo contrario, y estas tablas tienen columnas muy
- *  dispares (un código CUPOF completo vs. "DIV"). */
-function colgroup(anchos){return '<colgroup>'+anchos.map(a=>`<col style="width:${a}%">`).join('')+'</colgroup>';}
+/** Arma la fila de encabezado de una tabla con el ancho de cada columna puesto en el atributo HTML
+ *  width= (además del style, por las dudas) de cada <th> — en vez de <colgroup>, que Word ignora casi
+ *  por completo al convertir el HTML a .doc. El atributo width= en las celdas SÍ lo respeta tanto Word
+ *  como los navegadores/html2canvas (PDF), así que es la forma más compatible de fijar proporciones. */
+function filaTh(headers,anchos){
+  return '<tr>'+headers.map((h,i)=>`<th width="${anchos[i]}%" style="width:${anchos[i]}%">${h}</th>`).join('')+'</tr>';
+}
+/** Marcador de salto de página específico de Word: además de la clase CSS ".salto" (que ya funciona bien
+ *  en PDF/navegador), Word necesita este <br> especial (mso-special-character:line-break combinado con
+ *  page-break-before:always) para respetar el salto al convertir el HTML a .doc — sin esto, la Disposición
+ *  podía terminar arrancando a mitad de página en el editable de Word (reportado por la usuaria 06/07/2026). */
+const SALTO_WORD=`<br clear=all style="mso-special-character:line-break;page-break-before:always">`;
 /* Constantes legales fijas del modelo (Res. de la reforma, marco legal, localidad, firma). Se repiten
  * igual en toda acta — si en algún momento cambian, se actualizan acá una sola vez. */
 const LOCALIDAD='Comandante Fontana';
@@ -1995,30 +2045,30 @@ function actaHTML(docente){
   const filaResumenSuelta=r=>`<tr><td class="cup">${r.origenes.map(o=>`${esc(o.texto)}${o.instrumento?'<br>'+esc(o.instrumento):''}`).join('<br>')}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td></tr>`;
 
   const bloqueTiempo=tiempo?`<p class="tiempoHead">${esc(tiempo.tipo)}-${esc(tiempo.hs)} horas- ${esc(tiempo.instrumento)}</p>
-   <table>${colgroup([8,6,10,76])}<tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
+   <table>${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
    ${origConTiempo.map(filaOrigen).join('')||'<tr><td colspan="4">(sin datos)</td></tr>'}</table>`:'';
   const bloqueSueltas=origSueltas.length?`<p style="font-weight:bold;margin:10px 0 4px">HORAS CÁTEDRAS</p>
-   <table>${colgroup([8,6,10,76])}<tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
+   <table>${filaTh(['CURSO','DIV','CARGA HORARIA','ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF'],[8,6,10,76])}
    ${origSueltas.map(filaOrigen).join('')}</table>`:'';
   // Reasignaciones: Plan(sigla), Curso, División, Horas (antes "carga horaria"/"CARGA HORA" — se acorta
   // el título para reducir el ancho de esa columna), Sit. Revista, Espacio Curricular Actual (antes decía
   // "Curso actual"), CUPOF, Hs — pedido explícito de la usuaria 06/07/2026.
   const aceptaTiempo=destConTiempo.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table>${colgroup([7,7,6,7,11,24,30,8])}<tr><th>Plan</th><th>Curso</th><th>Div</th><th>Horas</th><th>Sit. Revista</th><th>Espacio Curricular Actual</th><th>CUPOF</th><th>Hs</th></tr>
+   <table>${filaTh(['Plan','Curso','Div','Horas','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs'],[7,7,6,7,11,24,30,8])}
    ${agruparPorEspacio(destConTiempo).map(filaDestinoGrupo).join('')}</table>`:'';
   const aceptaSueltas=destSueltas.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table>${colgroup([7,7,6,7,11,24,30,8])}<tr><th>Plan</th><th>Curso</th><th>Div</th><th>Horas</th><th>Sit. Revista</th><th>Espacio Curricular Actual</th><th>CUPOF</th><th>Hs</th></tr>
+   <table>${filaTh(['Plan','Curso','Div','Horas','Sit. Revista','Espacio Curricular Actual','CUPOF','Hs'],[7,7,6,7,11,24,30,8])}
    ${agruparPorEspacio(destSueltas).map(filaDestinoGrupo).join('')}</table>`:'';
-  const resumenTiempo=destConTiempo.length?`<table>${colgroup([26,30,8,10,8,18])}<tr><th>CUPOF:HISTÓRICAS</th><th>REASIGNADO EN</th><th>hs</th><th>curso</th><th>DIV</th><th>TURNO</th></tr>
+  const resumenTiempo=destConTiempo.length?`<table>${filaTh(['CUPOF:HISTÓRICAS','REASIGNADO EN','hs','curso','DIV','TURNO'],[26,30,8,10,8,18])}
    ${destConTiempo.map(filaResumenTiempo).join('')}</table>`:'';
   const resumenSueltas=destSueltas.length?`<p>Y la reasignación de ${numALetras(hsSueltas)} (${hsSueltas}) horas cátedra${destSueltas[0]?` al ${esc(destSueltas[0].plan)}`:''} ${RES_MARCO}</p>
-   <table>${colgroup([32,32,8,14,14])}<tr><th>CUPOF-Resolución</th><th>REASIGNADO</th><th>HORAS</th><th>CURSO</th><th>DIV</th></tr>
+   <table>${filaTh(['CUPOF-Resolución','REASIGNADO','HORAS','CURSO','DIV'],[32,32,8,14,14])}
    ${destSueltas.map(filaResumenSuelta).join('')}</table>`:'';
 
   return `<h1>ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES</h1>
   <p class="actap">En la localidad de ${LOCALIDAD} a los ………. días del mes de ${esc(fecha)}, comparece en la Dirección de la EPES Nº 14 el/la ${tratamiento} <b>${esc(docente)}</b>, DNI N°: <b>${dni}</b>, quien acepta, en el marco de ${LEY_MARCO}, desempeñarse desde la toma de posesión en las horas reubicadas, con una propuesta pedagógica enmarcada en los objetivos establecidos en la ${RES_MARCO}, en los siguientes espacios curriculares:</p>
   ${bloqueTiempo}${bloqueSueltas}${aceptaTiempo}${aceptaSueltas}
-  <p class="salto"></p>
+  <p class="salto"></p>${SALTO_WORD}
   <p style="text-align:right"><b>${LOCALIDAD}</b></p>
   <p class="hdr">VISTO</p>
   <p class="consid">La necesidad de reorganizar la POF de la escuela, y reasignar horas de los CUPOF y las plazas correspondientes, a la estructura curricular vigente por ${RES_MARCO}; y</p>
@@ -2047,7 +2097,8 @@ function bajarPDF(nombre,html){
   if(typeof html2pdf==='undefined')return msg('No cargó la librería de PDF');
   const el=document.createElement('div');el.innerHTML=`<style>${ACTA_CSS}</style>`+html;
   // Formato y márgenes según modelo_disposición.doc: página Oficio/Legal (215.9x355.6mm), márgenes 25mm sup/inf, 30mm izq/der.
-  html2pdf().set({filename:nombre,margin:[25,30,25,30],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2}}).from(el).save();
+  // pagebreak mode 'css' respeta el salto ".salto" antes de la Disposición.
+  html2pdf().set({filename:nombre,margin:[25,30,25,30],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2},pagebreak:{mode:['css','avoid-all']}}).from(el).save();
 }
 function docentesConDestino(){
   return filas('DOCENTES').map(f=>f[1]).filter(n=>asignacionesDelDocente(n).length>0).sort();
@@ -2062,7 +2113,7 @@ function genActa(fmt){
 /** Genera el PDF de una acta como Blob (en vez de bajarlo directo), para meterlo en el ZIP del lote. */
 async function actaPdfBlob(html){
   const el=document.createElement('div');el.innerHTML=`<style>${ACTA_CSS}</style>`+html;
-  return html2pdf().set({margin:[25,30,25,30],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2}}).from(el).outputPdf('blob');
+  return html2pdf().set({margin:[25,30,25,30],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2},pagebreak:{mode:['css','avoid-all']}}).from(el).outputPdf('blob');
 }
 /** Genera TODAS las actas de golpe, pero como archivos INDIVIDUALES por docente (uno por uno, no un único
  *  archivo con todas juntas) — pedido de la usuaria 06/07/2026 — empaquetados en un solo ZIP para que la
@@ -2095,6 +2146,7 @@ async function genActasTodas(fmt){
  * el campo CUPOF debe quedar limpio. Tres alcances: un curso+división, un plan completo (todos sus
  * cursos/divisiones), o todos los planes. */
 const ASIG_CSS=`@page{size:297mm 210mm;margin:12mm 14mm}
+*{box-sizing:border-box}
 body{font-family:Arial,sans-serif;font-size:10pt;margin:16px}
 h1{text-align:center;font-size:13pt;margin-bottom:2px}
 h2.sub{text-align:center;font-size:10pt;font-weight:normal;color:#444;margin:0 0 10px}
@@ -2107,7 +2159,12 @@ td.cup{font-family:Consolas,monospace;font-size:7pt;overflow-wrap:anywhere;word-
 .pill{display:inline-block;padding:1px 6px;border-radius:8px;font-size:7.5pt;color:#fff;white-space:nowrap}
 .ok{background:#1e8449}.falta{background:#c0392b}.exceso{background:#b9770e}.info{background:#8395a7}
 .mini{font-size:7.5pt;color:#666}
-.saltoPlan{page-break-before:always}`;
+/* Cada curso+división es un bloque que debe quedar ENTERO en la misma página: sin esto, una tabla que no
+ * entraba justo se cortaba a mitad de fila y en PDF (que rasteriza cada página como imagen) el corte
+ * partía los caracteres literalmente por la mitad (reportado por la usuaria 06/07/2026). break-inside es
+ * la propiedad moderna, page-break-inside la que reconocen más motores/versiones viejas — se ponen las dos. */
+.bloqueAsig{page-break-inside:avoid;break-inside:avoid}
+.saltoPlan{page-break-before:always;break-before:page}`;
 /** Tabla de una sola combinación plan/curso/división, misma lógica que rConciliadorHoras (caja vs.
  *  asignado por espacio) pero sin edición: docente y CUPOF en texto plano, sin pills de N° parcial ni
  *  observaciones, y sin la columna de botones (la columna ESTADO conserva el pill completo/faltan/excede,
@@ -2134,8 +2191,8 @@ function tablaAsignacionHoras(plan,curso,div){
        <td>${pos===0?est:''}</td></tr>`;
     });
   });
-  return `<h3>${esc(PLAN_INV[plan]||plan)} — ${esc(curso)} ${esc(div)}</h3>
-   <table>${colgroup([24,8,20,26,8,14])}<tr><th>ESPACIO</th><th>HS CAJA</th><th>DOCENTE</th><th>CUPOF</th><th>HS ASIG.</th><th>ESTADO</th></tr>${filasHtml}</table>`;
+  return `<div class="bloqueAsig"><h3>${esc(PLAN_INV[plan]||plan)} — ${esc(curso)} ${esc(div)}</h3>
+   <table>${filaTh(['ESPACIO','HS CAJA','DOCENTE','CUPOF','HS ASIG.','ESTADO'],[24,8,20,26,8,14])}${filasHtml}</table></div>`;
 }
 function planillaAsignacionHTML(){
   let cuerpo='';
@@ -2163,7 +2220,9 @@ function genPlanillaAsignacion(fmt){
   } else {
     if(typeof html2pdf==='undefined')return msg('No cargó la librería de PDF');
     const el=document.createElement('div');el.innerHTML=`<style>${ASIG_CSS}</style>`+html;
-    html2pdf().set({filename:nombreBase+'.pdf',margin:[12,14,12,14],jsPDF:{unit:'mm',format:'a4',orientation:'landscape'},html2canvas:{scale:2}}).from(el).save();
+    // pagebreak mode 'css' respeta el page-break-inside:avoid de .bloqueAsig; 'avoid-all' es un respaldo
+    // heurístico extra de html2pdf.js para no cortar bloques (tablas/filas) a mitad de página.
+    html2pdf().set({filename:nombreBase+'.pdf',margin:[12,14,12,14],jsPDF:{unit:'mm',format:'a4',orientation:'landscape'},html2canvas:{scale:2},pagebreak:{mode:['css','avoid-all']}}).from(el).save();
   }
   msg('Planilla de Asignación de Horas generada');
 }
