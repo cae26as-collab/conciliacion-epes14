@@ -412,7 +412,18 @@ function rConciliadorHoras(){
  * dar un valor válido (PTP 12/18/24/30, o PTC exactamente 36). Guardar NO toca CUPOF ni TIEMPOS: solo
  * registra la propuesta en la hoja PROPUESTAS_TIEMPO, para la planilla "PROPUESTA DE CREACIÓN DE
  * CARGOS" — la creación real del Tiempo la decide y aplica el usuario aparte si el Ministerio aprueba. */
-let propTiempoSel='', propDoc='', propSel={};
+let propTiempoSel='', propDoc='', propSel={}, propArea='', propValorSA={};
+/** Interpreta el texto guardado en "CUPOF INCLUIDAS" de una propuesta: "cup1 (4hs) / cup2 (2hs)" -> lista
+ *  de {cup,valor}. Devuelve [] si no matchea nada (formato viejo, guardado antes de este cambio, sin el
+ *  detalle por CUPOF — se sigue mostrando el texto crudo tal cual en la lista de propuestas guardadas). */
+function parseCupofIncluidas(txt){
+  const out=[];
+  String(txt||'').split('/').forEach(seg=>{
+    const m=seg.trim().match(/^(.*?)\s*\((\d+(?:[.,]\d+)?)\s*hs?\)$/i);
+    if(m)out.push({cup:m[1].trim(),valor:parseFloat(m[2].replace(',','.'))});
+  });
+  return out;
+}
 const VALORES_TIEMPO_VALIDOS=[12,18,24,30,36];
 function tipoDeHoras(hs){ if(hs===36)return 'PTC 36'; if([12,18,24,30].includes(hs))return 'PTP '+hs; return null; }
 function rConciliadorTiempos(){
@@ -431,19 +442,31 @@ function rConciliadorTiempos(){
   const docs=filas('DOCENTES').map(f=>f[1]).sort();
   if(!propDoc)propDoc=docs[0]||'';
   const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
+  const cargasProp=cargasCupof();
+  // Solo CUPOF de horas sueltas (sin Tiempo asignado todavía) del docente Y con saldo disponible —total
+  // (nada asignado todavía: ficha "Sin asignar") o fracción (parte ya usada en otra asignación, pero
+  // queda un resto: ficha "Asignadas") — pedido de la usuaria 07/07/2026. Las que no tienen NADA de saldo
+  // disponible no aparecen en ninguna de las dos.
   const sueltas=designacionesDelDocente(propDoc).map(f=>{
     const c=cupIdx[cupKey(f[2])];
-    if(!c||c[iClase]!=='Horas'||c[iSuf])return null; // solo horas sueltas, sin Tiempo asignado todavía
-    return {key:cupKey(f[2]),cup:c[0],carga:unNum(c[iCarga])};
+    if(!c||c[iClase]!=='Horas'||c[iSuf])return null;
+    const key=cupKey(f[2]); const cc=cargasProp[key]; if(!cc)return null;
+    const libre=Math.round((cc.carga-cc.usado)*10)/10;
+    if(libre<=0.001)return null;
+    return {key,cup:c[0],carga:unNum(c[iCarga]),usado:cc.usado,libre};
   }).filter(Boolean);
   const vistos=new Set(); const sueltasUnicas=sueltas.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
+  const sinAsignar=sueltasUnicas.filter(x=>x.usado<=0.001);   // CUPOF completamente libre: ella elige cuánto usar
+  const asignadas=sueltasUnicas.filter(x=>x.usado>0.001);     // CUPOF con una fracción ya usada en otro lado: cuenta el valor ya asignado
+  const valorDe=x=>x.usado>0.001?x.usado:(propValorSA[x.key]??x.carga);
   const marcadas=sueltasUnicas.filter(x=>propSel[x.key]);
-  const sumaProp=marcadas.reduce((a,x)=>a+x.carga,0);
+  const sumaProp=marcadas.reduce((a,x)=>a+valorDe(x),0);
   const tipoSug=tipoDeHoras(sumaProp);
   const docRow=filas('DOCENTES').find(f=>f[1]===propDoc);
   const dni=docRow?docRow[0]:'';
 
   const propuestas=filas('PROPUESTAS_TIEMPO')||[];
+  const iPArea=ix('PROPUESTAS_TIEMPO','ÁREA');
 
   v.innerHTML=`<div class="card"><h3>Consultar un Tiempo existente</h3>
    <p class="mini">Elegí un sufijo de Tiempo para ver qué CUPOF de horas tiene agrupadas hoy y si la suma coincide con lo declarado.</p>
@@ -453,46 +476,67 @@ function rConciliadorTiempos(){
     <div class="tabla-wrap"><table><tr><th>CUPOF</th><th>CARGA</th></tr>${grupo.map(g=>`<tr><td class="cupofcell">${esc(g.cup)}</td><td>${g.carga}</td></tr>`).join('')||'<tr><td colspan="2" class="mini">Ninguna CUPOF con este sufijo</td></tr>'}</table></div>`:'<p class="mini">No hay Tiempos cargados.</p>'}
   </div>
   <div class="card"><h3>Proponer un Tiempo nuevo</h3>
-   <p class="mini">Elegí un docente y marcá sus CUPOF sueltas (de horas, sin Tiempo asignado todavía) que querés agrupar en un Tiempo nuevo. Solo se guarda como propuesta — no modifica CUPOF ni TIEMPOS.</p>
-   <div class="fila"><div><label>Docente</label><select id="pDoc">${docs.map(d=>`<option ${d===propDoc?'selected':''}>${esc(d)}</option>`).join('')}</select></div></div>
-   ${sueltasUnicas.length?`<div class="tabla-wrap" style="margin-top:8px"><table><tr><th></th><th>CUPOF</th><th>CARGA</th></tr>
-    ${sueltasUnicas.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td></tr>`).join('')}</table></div>`
-    :'<p class="mini">Este docente no tiene CUPOF de horas sueltas (sin Tiempo) disponibles para agrupar.</p>'}
+   <p class="mini">Elegí un docente y marcá las CUPOF que querés agrupar en un Tiempo nuevo. Solo se guarda como propuesta — no modifica CUPOF ni TIEMPOS.</p>
+   <div class="fila"><div><label>Docente</label><select id="pDoc">${docs.map(d=>`<option ${d===propDoc?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+    <div><label>Área</label><input id="pArea" value="${esc(propArea)}" style="min-width:220px" placeholder="ej. Ciencias Sociales"></div></div>
+   ${sinAsignar.length?`<h4 style="margin:12px 0 4px">Sin asignar (saldo completo disponible)</h4>
+    <div class="tabla-wrap"><table><tr><th></th><th>CUPOF</th><th>CARGA</th><th>Valor a utilizar</th></tr>
+    ${sinAsignar.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td>
+     <td><input type="number" min="0.5" step="0.5" max="${x.carga}" value="${propValorSA[x.key]??x.carga}" style="width:70px" onchange="propValorSA['${x.key}']=parseFloat(this.value)||0;rConciliadorTiempos()"></td></tr>`).join('')}
+    </table></div>`:''}
+   ${asignadas.length?`<h4 style="margin:12px 0 4px">Asignadas (fracción ya usada, con saldo restante)</h4>
+    <div class="tabla-wrap"><table><tr><th></th><th>CUPOF</th><th>CARGA</th><th>Ya asignado</th></tr>
+    ${asignadas.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td><td>${x.usado}</td></tr>`).join('')}
+    </table></div>`:''}
+   ${!sinAsignar.length&&!asignadas.length?'<p class="mini">Este docente no tiene CUPOF de horas sueltas (sin Tiempo) con saldo disponible para agrupar.</p>':''}
    <p style="margin-top:8px"><b>Suma marcada:</b> ${sumaProp}hs — ${tipoSug?`<span class="pill ok">${tipoSug} ✔ válido</span>`:marcadas.length?`<span class="pill exceso">⚠ no coincide con un valor de Tiempo (12/18/24/30 PTP, 36 PTC)</span>`:''}</p>
    <div><label>Observación (opcional)</label><input id="pObs" style="width:100%"></div>
    ${ROL==='admin'?`<div class="fila" style="margin-top:8px"><button class="b ${marcadas.length?'':'sec'}" ${marcadas.length?'':'disabled'} onclick="accion(this,guardarPropuestaTiempo)">💾 Guardar propuesta</button></div>`:''}
   </div>
   <div class="card"><h3>Propuestas guardadas (${propuestas.length})</h3>
-   ${propuestas.length?`<div class="tabla-wrap"><table><tr><th>FECHA</th><th>DOCENTE</th><th>TIPO</th><th>HORAS</th><th>CUPOF INCLUIDAS</th><th>OBS</th>${ROL==='admin'?'<th></th>':''}</tr>
-    ${propuestas.map((f,i)=>`<tr><td>${esc(f[0])}</td><td>${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td class="mini">${esc(f[5])}</td><td class="mini">${esc(f[7])}</td>${ROL==='admin'?`<td><a href="#" onclick="accion(this,()=>borrarPropuestaTiempo(${i})); return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>`:'<p class="mini">Ninguna todavía.</p>'}
+   ${propuestas.length?`<div class="tabla-wrap"><table><tr><th>N°</th><th>FECHA</th><th>ÁREA</th><th>DOCENTE</th><th>TIPO</th><th>HORAS</th><th>CUPOF INCLUIDAS</th><th>OBS</th>${ROL==='admin'?'<th></th>':''}</tr>
+    ${propuestas.map((f,i)=>`<tr><td>${i+1}</td><td>${esc(f[0])}</td><td>${esc(iPArea>-1?f[iPArea]:'')}</td><td>${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td class="mini">${esc(f[5])}</td><td class="mini">${esc(f[7])}</td>${ROL==='admin'?`<td><a href="#" onclick="accion(this,()=>borrarPropuestaTiempo(${i})); return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>`:'<p class="mini">Ninguna todavía.</p>'}
   </div>`;
   document.getElementById('tSel').onchange=e=>{propTiempoSel=e.target.value;rConciliadorTiempos();};
-  document.getElementById('pDoc').onchange=e=>{propDoc=e.target.value;propSel={};rConciliadorTiempos();};
+  document.getElementById('pDoc').onchange=e=>{propDoc=e.target.value;propSel={};propValorSA={};rConciliadorTiempos();};
+  document.getElementById('pArea').onchange=e=>{propArea=e.target.value;};
 }
 async function guardarPropuestaTiempo(){
   const iSuf=ix('CUPOF','SUFIJO TIEMPO'), iCarga=ix('CUPOF','CARGA'), iClase=ix('CUPOF','CLASE');
   const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
+  const cargasProp=cargasCupof();
   const sueltas=designacionesDelDocente(propDoc).map(f=>{
     const c=cupIdx[cupKey(f[2])];
     if(!c||c[iClase]!=='Horas'||c[iSuf])return null;
-    return {key:cupKey(f[2]),cup:c[0],carga:unNum(c[iCarga])};
+    const key=cupKey(f[2]); const cc=cargasProp[key]; if(!cc)return null;
+    const libre=Math.round((cc.carga-cc.usado)*10)/10;
+    if(libre<=0.001)return null;
+    return {key,cup:c[0],carga:unNum(c[iCarga]),usado:cc.usado,libre};
   }).filter(Boolean);
   const vistos=new Set(); const sueltasUnicas=sueltas.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
+  const valorDe=x=>x.usado>0.001?x.usado:(propValorSA[x.key]??x.carga);
   const marcadas=sueltasUnicas.filter(x=>propSel[x.key]);
   if(!marcadas.length)return msg('Marcá al menos una CUPOF para proponer un Tiempo.');
-  const suma=marcadas.reduce((a,x)=>a+x.carga,0);
+  const area=(document.getElementById('pArea')?.value||propArea||'').trim();
+  if(!area)return msg('Completá el Área.');
+  const suma=marcadas.reduce((a,x)=>a+valorDe(x),0);
   const tipo=tipoDeHoras(suma);
   if(!tipo && !confirm(`La suma marcada (${suma}hs) no coincide con un valor de Tiempo válido (12/18/24/30 PTP, 36 PTC). ¿Guardar la propuesta igual, para revisar después?`))return;
   const docRow=filas('DOCENTES').find(f=>f[1]===propDoc);
   const fecha=new Date().toLocaleDateString('es-AR');
-  const vals=['FECHA','DNI','DOCENTE','TIPO PROPUESTO','HORAS TOTAL','CUPOF INCLUIDAS','ESTADO','OBS','USUARIO'].map(col=>({
-    'FECHA':fecha,'DNI':docRow?docRow[0]:'','DOCENTE':propDoc,'TIPO PROPUESTO':tipo||'(sin coincidencia)','HORAS TOTAL':suma,
-    'CUPOF INCLUIDAS':marcadas.map(x=>x.cup).join(' / '),'ESTADO':'propuesta','OBS':document.getElementById('pObs').value||'',
-    'USUARIO':localStorage.getItem('conc_nombre')||''}[col]));
+  // Cada CUPOF incluida se guarda junto con el valor que efectivamente aporta a esta propuesta (todo si
+  // estaba "sin asignar", o solo la fracción "ya asignada" si tenía otro uso parcial) — formato
+  // "CUPOF (Nhs) / CUPOF2 (Mhs)", parseable después con parseCupofIncluidas() para la Planilla de salida.
+  const aC=cols('PROPUESTAS_TIEMPO');
+  if(aC.indexOf('ÁREA')===-1)msg('Atención: falta la columna ÁREA en PROPUESTAS_TIEMPO (correr agregarColumnaAreaPropuestas() en Apps Script) — se guarda igual, pero sin el Área.',7000);
+  const vals=aC.map(col=>({
+    'FECHA':fecha,'DNI':docRow?docRow[0]:'','DOCENTE':propDoc,'ÁREA':area,'TIPO PROPUESTO':tipo||'(sin coincidencia)','HORAS TOTAL':suma,
+    'CUPOF INCLUIDAS':marcadas.map(x=>`${x.cup} (${valorDe(x)}hs)`).join(' / '),'ESTADO':'propuesta','OBS':document.getElementById('pObs').value||'',
+    'USUARIO':localStorage.getItem('conc_nombre')||''}[col]??''));
   try{
     await apiPost({action:'crear',entidad:'PROPUESTAS_TIEMPO',valores:vals});
     BD['PROPUESTAS_TIEMPO'].filas.push(vals.map(String));
-    propSel={};
+    propSel={};propValorSA={};propArea='';
     msg('Propuesta guardada');rConciliadorTiempos();
   }catch(e){msg('Error: '+e.message);}
 }
@@ -1968,12 +2012,26 @@ function genPlanilla(){
   XLSX.utils.book_append_sheet(wb,ws3,"DETALLE DE CARGOS ");
 
   // ---------- Hoja 4: PROPUESTA DE CREACION DE CARGOS ----------
-  // La columna E queda SIEMPRE vacía (separa la tabla de la izquierda, sin dato vinculado todavía, de la
-  // de la derecha). Columnas F/G ahora se completan: una fila por cada espacio curricular de los planes
-  // nuevos que no tiene ninguna asignación, o que tiene asignación incompleta, con la carga horaria total
-  // o parcial que falta para completarla (pedido explícito de la usuaria 06/07/2026).
+  // La columna E queda SIEMPRE vacía (separa la tabla de la izquierda, ahora poblada desde las propuestas
+  // guardadas en Conciliador > Asignación para crear Tiempos > "Proponer un Tiempo nuevo", de la de la
+  // derecha). Columnas F/G se completan aparte: una fila por cada espacio curricular de los planes nuevos
+  // que no tiene ninguna asignación, o que tiene asignación incompleta (pedido 06/07/2026).
+  // A-D: pedido de la usuaria 07/07/2026 — cada propuesta guardada aporta una fila por cada CUPOF que
+  // incluye (columna C, antes "ESPACIOS CURRICULARES QUE SE VAN ASIGNAR A ESOS CARGOS", ahora "CUPOF
+  // Históricas a Integrar") con su carga horaria (columna D, antes "CARGA HORARIA DEL ESPACIO CURRICULAR",
+  // ahora solo "CARGA HORARIA" — el valor ya asignado si la CUPOF venía de la ficha "Asignadas", o el
+  // valor elegido a utilizar si venía de "Sin asignar"). Área y Cargo (con su N° correlativo, a partir de
+  // 1) se repiten en cada fila del grupo para que quede claro a qué propuesta corresponde cada CUPOF.
   const h4=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","","(5)","(6)"],
-    ["AREA","CARGO \n(PTP 12 - PTP 18 - PTP 24 - PTP 30 PTC 36)","ESPACIOS CURRICULARES QUE SE VAN ASIGNAR A ESOS CARGOS","CARGA HORARIA DEL ESPACIO CURRICULAR","","ESPACIOS CURRICULARES DE HORAS SUELTAS PARA COMPLETAR LA CAJA CURRICULAR","HORAS CATEDRAS"]];
+    ["AREA","CARGO \n(PTP 12 - PTP 18 - PTP 24 - PTP 30 PTC 36)","CUPOF Históricas a Integrar","CARGA HORARIA","","ESPACIOS CURRICULARES DE HORAS SUELTAS PARA COMPLETAR LA CAJA CURRICULAR","HORAS CATEDRAS"]];
+  const iPTArea=ix('PROPUESTAS_TIEMPO','ÁREA'),iPTTipo=ix('PROPUESTAS_TIEMPO','TIPO PROPUESTO'),iPTCup=ix('PROPUESTAS_TIEMPO','CUPOF INCLUIDAS');
+  filas('PROPUESTAS_TIEMPO').forEach((p,idx)=>{
+    const area=iPTArea>-1?(p[iPTArea]||''):'';
+    const cargoLabel=`N°${idx+1} — ${p[iPTTipo]||''}`;
+    const items=parseCupofIncluidas(p[iPTCup]);
+    if(!items.length){ h4.push([area,cargoLabel,p[iPTCup]||'','','','','']); return; }
+    items.forEach((it,j)=>h4.push([j===0?area:'',j===0?cargoLabel:'',it.cup,it.valor,'','','']));
+  });
   const iEsP=ix('ESPACIOS','PLAN'),iEsC=ix('ESPACIOS','CURSO');
   const faltantes=[];
   ['CBS-672','BCS','BCN','BEA','BEA-EPJA'].forEach(plan=>{
@@ -2195,7 +2253,9 @@ const W_RESUMEN=[41,32,5,7,5,10];
  * docx.js no se le pasa columnWidths explícito, genera un tblGrid con todas las columnas iguales (ver su
  * fuente: default columnWidths = Array(nCols).fill(100)) — el ancho % puesto solo en cada celda (tcW) es
  * apenas una sugerencia que Word ignora frente al tblGrid. */
-const PAGINA_MM={ancho:215.9,alto:355.6,arriba:25,abajo:25,izq:30,der:20};
+/* Tamaño Oficio real (Argentina): 215.9x330.2mm (8.5x13in) — NO confundir con "Legal" (215.9x355.6mm,
+ * 8.5x14in), que es más largo y es lo que había puesto antes por error. Pedido de la usuaria 07/07/2026. */
+const PAGINA_MM={ancho:215.9,alto:330.2,arriba:25,abajo:25,izq:30,der:20};
 const ANCHO_UTIL_MM=PAGINA_MM.ancho-PAGINA_MM.izq-PAGINA_MM.der;
 function mmATwip(mm){return Math.round(mm*56.6929133858);}
 function anchoTwip(pct){return mmATwip(ANCHO_UTIL_MM*pct/100);}
@@ -2334,7 +2394,7 @@ function actaDocxDocumento(docente){
   hijos.push(new Paragraph({spacing:{after:240},children:[txt('DISPOSICIÓN Nº _________/')]}));
   hijos.push(new Paragraph({children:[txt('NOTIFICADO: …………………………………………………')]}));
 
-  return new Document({sections:[{properties:{page:{size:{width:'215.9mm',height:'355.6mm'},margin:{top:'25mm',right:'20mm',bottom:'25mm',left:'30mm'}}},children:hijos}]});
+  return new Document({sections:[{properties:{page:{size:{width:'215.9mm',height:'330.2mm'},margin:{top:'25mm',right:'20mm',bottom:'25mm',left:'30mm'}}},children:hijos}]});
 }
 
 /** Arma el docDefinition de pdfmake (PDF vectorial, texto real seleccionable) para un docente. */
@@ -2415,7 +2475,7 @@ function actaPdfDocDefinition(docente){
   content.push({text:'DISPOSICIÓN Nº _________/',fontSize:11,margin:[0,0,0,16]});
   content.push({text:'NOTIFICADO: …………………………………………………',fontSize:11});
   return{
-    pageSize:{width:mm(215.9),height:mm(355.6)},
+    pageSize:{width:mm(215.9),height:mm(330.2)},
     pageMargins:[mm(30),mm(25),mm(20),mm(25)],
     defaultStyle:{font:'Roboto'},
     content,
