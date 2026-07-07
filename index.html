@@ -412,7 +412,7 @@ function rConciliadorHoras(){
  * dar un valor válido (PTP 12/18/24/30, o PTC exactamente 36). Guardar NO toca CUPOF ni TIEMPOS: solo
  * registra la propuesta en la hoja PROPUESTAS_TIEMPO, para la planilla "PROPUESTA DE CREACIÓN DE
  * CARGOS" — la creación real del Tiempo la decide y aplica el usuario aparte si el Ministerio aprueba. */
-let propTiempoSel='', propDoc='', propSel={}, propArea='', propValorSA={};
+let propTiempoSel='', propDoc='', propSel={}, propSelAsig={}, propArea='', propValorSA={};
 /** Interpreta el texto guardado en "CUPOF INCLUIDAS" de una propuesta: "cup1 (4hs) / cup2 (2hs)" -> lista
  *  de {cup,valor}. Devuelve [] si no matchea nada (formato viejo, guardado antes de este cambio, sin el
  *  detalle por CUPOF — se sigue mostrando el texto crudo tal cual en la lista de propuestas guardadas). */
@@ -443,24 +443,26 @@ function rConciliadorTiempos(){
   if(!propDoc)propDoc=docs[0]||'';
   const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
   const cargasProp=cargasCupof();
-  // Solo CUPOF de horas sueltas (sin Tiempo asignado todavía) del docente Y con saldo disponible —total
-  // (nada asignado todavía: ficha "Sin asignar") o fracción (parte ya usada en otra asignación, pero
-  // queda un resto: ficha "Asignadas") — pedido de la usuaria 07/07/2026. Las que no tienen NADA de saldo
-  // disponible no aparecen en ninguna de las dos.
-  const sueltas=designacionesDelDocente(propDoc).map(f=>{
+  // CUPOF de horas sueltas (sin Tiempo asignado todavía) del docente. Corrección de la usuaria 07/07/2026:
+  // los dos bloques NO son excluyentes — "Sin asignar" muestra TODAS las que tienen saldo disponible
+  // (aunque ya tengan también algo asignado en otro lado), y "Asignadas" muestra TODAS las que tienen
+  // alguna asignación (aunque ya no les quede saldo). Una CUPOF parcialmente usada aparece en AMBOS
+  // bloques, con selección independiente en cada uno: marcarla solo en "Sin asignar" aporta el resto
+  // disponible; marcarla solo en "Asignadas" aporta lo ya asignado; marcarla en los dos aporta el total
+  // (ya asignado + disponible = carga completa) — para poder integrar toda la CUPOF histórica al Tiempo.
+  const candidatos=designacionesDelDocente(propDoc).map(f=>{
     const c=cupIdx[cupKey(f[2])];
     if(!c||c[iClase]!=='Horas'||c[iSuf])return null;
     const key=cupKey(f[2]); const cc=cargasProp[key]; if(!cc)return null;
     const libre=Math.round((cc.carga-cc.usado)*10)/10;
-    if(libre<=0.001)return null;
     return {key,cup:c[0],carga:unNum(c[iCarga]),usado:cc.usado,libre};
   }).filter(Boolean);
-  const vistos=new Set(); const sueltasUnicas=sueltas.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
-  const sinAsignar=sueltasUnicas.filter(x=>x.usado<=0.001);   // CUPOF completamente libre: ella elige cuánto usar
-  const asignadas=sueltasUnicas.filter(x=>x.usado>0.001);     // CUPOF con una fracción ya usada en otro lado: cuenta el valor ya asignado
-  const valorDe=x=>x.usado>0.001?x.usado:(propValorSA[x.key]??x.carga);
-  const marcadas=sueltasUnicas.filter(x=>propSel[x.key]);
-  const sumaProp=marcadas.reduce((a,x)=>a+valorDe(x),0);
+  const vistos=new Set(); const candidatosUnicos=candidatos.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
+  const sinAsignar=candidatosUnicos.filter(x=>x.libre>0.001);   // TODAS con saldo disponible
+  const asignadas=candidatosUnicos.filter(x=>x.usado>0.001);   // TODAS con alguna asignación
+  const marcadasSA=sinAsignar.filter(x=>propSel[x.key]);
+  const marcadasAsig=asignadas.filter(x=>propSelAsig[x.key]);
+  const sumaProp=marcadasSA.reduce((a,x)=>a+(propValorSA[x.key]??x.libre),0)+marcadasAsig.reduce((a,x)=>a+x.usado,0);
   const tipoSug=tipoDeHoras(sumaProp);
   const docRow=filas('DOCENTES').find(f=>f[1]===propDoc);
   const dni=docRow?docRow[0]:'';
@@ -479,64 +481,70 @@ function rConciliadorTiempos(){
    <p class="mini">Elegí un docente y marcá las CUPOF que querés agrupar en un Tiempo nuevo. Solo se guarda como propuesta — no modifica CUPOF ni TIEMPOS.</p>
    <div class="fila"><div><label>Docente</label><select id="pDoc">${docs.map(d=>`<option ${d===propDoc?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
     <div><label>Área</label><input id="pArea" value="${esc(propArea)}" style="min-width:220px" placeholder="ej. Ciencias Sociales"></div></div>
-   ${sinAsignar.length?`<h4 style="margin:12px 0 4px">Sin asignar (saldo completo disponible)</h4>
-    <div class="tabla-wrap"><table><tr><th></th><th>CUPOF</th><th>CARGA</th><th>Valor a utilizar</th></tr>
-    ${sinAsignar.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td>
-     <td><input type="number" min="0.5" step="0.5" max="${x.carga}" value="${propValorSA[x.key]??x.carga}" style="width:70px" onchange="propValorSA['${x.key}']=parseFloat(this.value)||0;rConciliadorTiempos()"></td></tr>`).join('')}
+   ${sinAsignar.length?`<h4 style="margin:12px 0 4px">Sin asignar (con saldo disponible)</h4>
+    <div class="tabla-wrap"><table><tr><th></th><th>CUPOF</th><th>CARGA</th><th>Disponible</th><th>Valor a utilizar</th></tr>
+    ${sinAsignar.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td><td>${x.libre}</td>
+     <td><input type="number" min="0.5" step="0.5" max="${x.libre}" value="${propValorSA[x.key]??x.libre}" style="width:70px" onchange="propValorSA['${x.key}']=parseFloat(this.value)||0;rConciliadorTiempos()"></td></tr>`).join('')}
     </table></div>`:''}
-   ${asignadas.length?`<h4 style="margin:12px 0 4px">Asignadas (fracción ya usada, con saldo restante)</h4>
+   ${asignadas.length?`<h4 style="margin:12px 0 4px">Asignadas (tienen alguna asignación)</h4>
     <div class="tabla-wrap"><table><tr><th></th><th>CUPOF</th><th>CARGA</th><th>Ya asignado</th></tr>
-    ${asignadas.map(x=>`<tr><td><input type="checkbox" ${propSel[x.key]?'checked':''} onchange="propSel['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td><td>${x.usado}</td></tr>`).join('')}
+    ${asignadas.map(x=>`<tr><td><input type="checkbox" ${propSelAsig[x.key]?'checked':''} onchange="propSelAsig['${x.key}']=this.checked;rConciliadorTiempos()"></td><td class="cupofcell">${esc(x.cup)}</td><td>${x.carga}</td><td>${x.usado}</td></tr>`).join('')}
     </table></div>`:''}
-   ${!sinAsignar.length&&!asignadas.length?'<p class="mini">Este docente no tiene CUPOF de horas sueltas (sin Tiempo) con saldo disponible para agrupar.</p>':''}
-   <p style="margin-top:8px"><b>Suma marcada:</b> ${sumaProp}hs — ${tipoSug?`<span class="pill ok">${tipoSug} ✔ válido</span>`:marcadas.length?`<span class="pill exceso">⚠ no coincide con un valor de Tiempo (12/18/24/30 PTP, 36 PTC)</span>`:''}</p>
+   ${!sinAsignar.length&&!asignadas.length?'<p class="mini">Este docente no tiene CUPOF de horas sueltas (sin Tiempo) para agrupar.</p>':''}
+   <p style="margin-top:8px"><b>Suma marcada:</b> ${sumaProp}hs — ${tipoSug?`<span class="pill ok">${tipoSug} ✔ válido</span>`:(marcadasSA.length+marcadasAsig.length)?`<span class="pill exceso">⚠ no coincide con un valor de Tiempo (12/18/24/30 PTP, 36 PTC)</span>`:''}</p>
    <div><label>Observación (opcional)</label><input id="pObs" style="width:100%"></div>
-   ${ROL==='admin'?`<div class="fila" style="margin-top:8px"><button class="b ${marcadas.length?'':'sec'}" ${marcadas.length?'':'disabled'} onclick="accion(this,guardarPropuestaTiempo)">💾 Guardar propuesta</button></div>`:''}
+   ${ROL==='admin'?`<div class="fila" style="margin-top:8px"><button class="b ${(marcadasSA.length+marcadasAsig.length)?'':'sec'}" ${(marcadasSA.length+marcadasAsig.length)?'':'disabled'} onclick="accion(this,guardarPropuestaTiempo)">💾 Guardar propuesta</button></div>`:''}
   </div>
   <div class="card"><h3>Propuestas guardadas (${propuestas.length})</h3>
    ${propuestas.length?`<div class="tabla-wrap"><table><tr><th>N°</th><th>FECHA</th><th>ÁREA</th><th>DOCENTE</th><th>TIPO</th><th>HORAS</th><th>CUPOF INCLUIDAS</th><th>OBS</th>${ROL==='admin'?'<th></th>':''}</tr>
     ${propuestas.map((f,i)=>`<tr><td>${i+1}</td><td>${esc(f[0])}</td><td>${esc(iPArea>-1?f[iPArea]:'')}</td><td>${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td class="mini">${esc(f[5])}</td><td class="mini">${esc(f[7])}</td>${ROL==='admin'?`<td><a href="#" onclick="accion(this,()=>borrarPropuestaTiempo(${i})); return false">🗑</a></td>`:''}</tr>`).join('')}</table></div>`:'<p class="mini">Ninguna todavía.</p>'}
   </div>`;
   document.getElementById('tSel').onchange=e=>{propTiempoSel=e.target.value;rConciliadorTiempos();};
-  document.getElementById('pDoc').onchange=e=>{propDoc=e.target.value;propSel={};propValorSA={};rConciliadorTiempos();};
+  document.getElementById('pDoc').onchange=e=>{propDoc=e.target.value;propSel={};propSelAsig={};propValorSA={};rConciliadorTiempos();};
   document.getElementById('pArea').onchange=e=>{propArea=e.target.value;};
 }
 async function guardarPropuestaTiempo(){
   const iSuf=ix('CUPOF','SUFIJO TIEMPO'), iCarga=ix('CUPOF','CARGA'), iClase=ix('CUPOF','CLASE');
   const cupIdx={};filas('CUPOF').forEach(f=>cupIdx[cupKey(f[0])]=f);
   const cargasProp=cargasCupof();
-  const sueltas=designacionesDelDocente(propDoc).map(f=>{
+  const candidatos=designacionesDelDocente(propDoc).map(f=>{
     const c=cupIdx[cupKey(f[2])];
     if(!c||c[iClase]!=='Horas'||c[iSuf])return null;
     const key=cupKey(f[2]); const cc=cargasProp[key]; if(!cc)return null;
     const libre=Math.round((cc.carga-cc.usado)*10)/10;
-    if(libre<=0.001)return null;
     return {key,cup:c[0],carga:unNum(c[iCarga]),usado:cc.usado,libre};
   }).filter(Boolean);
-  const vistos=new Set(); const sueltasUnicas=sueltas.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
-  const valorDe=x=>x.usado>0.001?x.usado:(propValorSA[x.key]??x.carga);
-  const marcadas=sueltasUnicas.filter(x=>propSel[x.key]);
-  if(!marcadas.length)return msg('Marcá al menos una CUPOF para proponer un Tiempo.');
+  const vistos=new Set(); const candidatosUnicos=candidatos.filter(x=>vistos.has(x.key)?false:(vistos.add(x.key),true));
+  const sinAsignar=candidatosUnicos.filter(x=>x.libre>0.001);   // TODAS las CUPOF con saldo disponible
+  const asignadas=candidatosUnicos.filter(x=>x.usado>0.001);    // TODAS las CUPOF con alguna asignación
+  const marcadasSA=sinAsignar.filter(x=>propSel[x.key]);
+  const marcadasAsig=asignadas.filter(x=>propSelAsig[x.key]);
+  if(!marcadasSA.length && !marcadasAsig.length)return msg('Marcá al menos una CUPOF para proponer un Tiempo.');
   const area=(document.getElementById('pArea')?.value||propArea||'').trim();
   if(!area)return msg('Completá el Área.');
-  const suma=marcadas.reduce((a,x)=>a+valorDe(x),0);
+  // Una misma CUPOF puede estar marcada en las dos fichas a la vez (parcialmente usada): en ese caso
+  // aporta las dos fracciones por separado (la "sin asignar" elegida + la "ya asignada"), y aparece dos
+  // veces en el detalle de CUPOF INCLUIDAS — equivale a transferir la CUPOF completa a este Tiempo.
+  const detalleSA=marcadasSA.map(x=>({cup:x.cup,valor:propValorSA[x.key]??x.libre}));
+  const detalleAsig=marcadasAsig.map(x=>({cup:x.cup,valor:x.usado}));
+  const detalle=[...detalleSA,...detalleAsig];
+  const suma=detalle.reduce((a,x)=>a+x.valor,0);
   const tipo=tipoDeHoras(suma);
   if(!tipo && !confirm(`La suma marcada (${suma}hs) no coincide con un valor de Tiempo válido (12/18/24/30 PTP, 36 PTC). ¿Guardar la propuesta igual, para revisar después?`))return;
   const docRow=filas('DOCENTES').find(f=>f[1]===propDoc);
   const fecha=new Date().toLocaleDateString('es-AR');
-  // Cada CUPOF incluida se guarda junto con el valor que efectivamente aporta a esta propuesta (todo si
-  // estaba "sin asignar", o solo la fracción "ya asignada" si tenía otro uso parcial) — formato
+  // Cada CUPOF incluida se guarda junto con el valor que efectivamente aporta a esta propuesta — formato
   // "CUPOF (Nhs) / CUPOF2 (Mhs)", parseable después con parseCupofIncluidas() para la Planilla de salida.
   const aC=cols('PROPUESTAS_TIEMPO');
   if(aC.indexOf('ÁREA')===-1)msg('Atención: falta la columna ÁREA en PROPUESTAS_TIEMPO (correr agregarColumnaAreaPropuestas() en Apps Script) — se guarda igual, pero sin el Área.',7000);
   const vals=aC.map(col=>({
     'FECHA':fecha,'DNI':docRow?docRow[0]:'','DOCENTE':propDoc,'ÁREA':area,'TIPO PROPUESTO':tipo||'(sin coincidencia)','HORAS TOTAL':suma,
-    'CUPOF INCLUIDAS':marcadas.map(x=>`${x.cup} (${valorDe(x)}hs)`).join(' / '),'ESTADO':'propuesta','OBS':document.getElementById('pObs').value||'',
+    'CUPOF INCLUIDAS':detalle.map(x=>`${x.cup} (${x.valor}hs)`).join(' / '),'ESTADO':'propuesta','OBS':document.getElementById('pObs').value||'',
     'USUARIO':localStorage.getItem('conc_nombre')||''}[col]??''));
   try{
     await apiPost({action:'crear',entidad:'PROPUESTAS_TIEMPO',valores:vals});
     BD['PROPUESTAS_TIEMPO'].filas.push(vals.map(String));
-    propSel={};propValorSA={};propArea='';
+    propSel={};propSelAsig={};propValorSA={};propArea='';
     msg('Propuesta guardada');rConciliadorTiempos();
   }catch(e){msg('Error: '+e.message);}
 }
@@ -721,6 +729,15 @@ function rConciliadorFunciones(){
     } else {
       const iAh=ix('ASIGNACIONES','HS'), iAp=ix('ASIGNACIONES','PLAN DESTINO');
       const planesNuevos=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
+      // Un solo botón "Guardar todo" al pie: guarda en lote todas las filas que tengan Plan+Función
+      // completos (pedido de la usuaria 07/07/2026 — antes había un botón por fila, incómodo cuando un
+      // docente tiene muchas CUPOF). Los botones por fila quedaron solo para 🗑 Borrar (acción puntual,
+      // sí tiene sentido una por una), identificado por índice numérico (ex.i), nunca por texto de CUPOF
+      // incrustado en el atributo onclick — eso fue el bug real: JSON.stringify(c.cupTexto) generaba
+      // comillas dobles que rompían el atributo HTML onclick="...", dejando el handler con sintaxis
+      // inválida (el navegador simplemente no lo registraba: por eso el botón no se deshabilitaba ni
+      // pasaba nada al hacer click, sin error visible). guardarFuncionesLote() ya no necesita ese dato
+      // por atributo: relee todo directo del DOM por fila, usando cupofDisponiblesDeDocente(funcDocSel).
       filasHtml=`<div class="tabla-wrap"><table><tr><th>CUPOF</th><th>Hs. disponibles</th><th>Hs a Asignar</th><th>Plan</th><th>Función Asignada</th><th></th></tr>
       ${cupofs.map(c=>{
         const ex=funcionExistente(funcDocSel,c.cupTexto);
@@ -732,10 +749,10 @@ function rConciliadorFunciones(){
         <td><input id="fh_${keyId}" type="number" min="0.5" step="0.5" value="${hsVal}" style="width:70px"></td>
         <td><select id="fp_${keyId}"><option value="">— plan —</option>${planesNuevos.map(p=>`<option ${p===planVal?'selected':''}>${p}</option>`).join('')}</select></td>
         <td><input id="ff_${keyId}" list="funcOpts" value="${esc(funcVal)}" style="min-width:220px" placeholder="Escribir o elegir…"></td>
-        <td><button class="b mini" onclick="accion(this,()=>guardarFuncion(${JSON.stringify(c.cupTexto)},'${keyId}'))">💾 ${ex?'Editar':'Guardar'}</button>
-        ${ex?` <button class="b mini sec" onclick="accion(this,()=>borrarFuncion(${ex.i}))">🗑 Borrar</button>`:''}</td></tr>`;
+        <td>${ex?`<button class="b mini sec" onclick="accion(this,()=>borrarFuncion(${ex.i}))">🗑 Borrar</button>`:''}</td></tr>`;
       }).join('')}
-      </table></div>`;
+      </table></div>
+      <div class="fila" style="margin-top:8px"><button class="b" onclick="accion(this,guardarFuncionesLote)">💾 Guardar todo</button></div>`;
     }
   }
   v.innerHTML=`<div class="card">
@@ -746,38 +763,59 @@ function rConciliadorFunciones(){
   </div>`;
   document.getElementById('fDoc').onchange=e=>{funcDocSel=e.target.value;rConciliadorFunciones();};
 }
-async function guardarFuncion(cupTexto,keyId){
-  const docente=funcDocSel; if(!docente)return msg('Elegí un docente');
-  const hsInput=document.getElementById('fh_'+keyId), funcInput=document.getElementById('ff_'+keyId), planInput=document.getElementById('fp_'+keyId);
-  let hs=parseFloat(hsInput.value)||0;
-  const funcion=(funcInput.value||'').trim();
-  const planNuevo=planInput.value;
-  if(!planNuevo)return msg('Elegí el Plan destino');
-  if(!funcion)return msg('Escribí o elegí una Función Asignada');
-  const cargas=cargasCupof(); const k=cupKey(cupTexto); const c=cargas[k];
-  if(!c)return msg('Esta CUPOF ya no tiene carga nominal (revisá el Validador)');
-  const existente=funcionExistente(docente,cupTexto);
+/** Guarda (crea o edita) UNA fila de Función Asignada ya validada — usada en lote por
+ *  guardarFuncionesLote(). Lanza si algo falla, para que el lote pueda contar/reportar errores por fila. */
+async function guardarUnaFuncion(docente,r){
+  const cargas=cargasCupof(); const k=cupKey(r.cupTexto); const c=cargas[k];
+  if(!c)throw new Error('la CUPOF ya no tiene carga nominal (revisá el Validador)');
+  const existente=funcionExistente(docente,r.cupTexto);
   const propio=existente?unNum(existente.f[ix('ASIGNACIONES','HS')]):0;
   const libre=Math.round((c.carga-c.usado+propio)*10)/10;
-  if(hs<=0)return msg('Las horas deben ser mayores a 0 (para quitar usá 🗑 Borrar)');
-  if(hs>libre){hs=libre;msg('Ajustado a '+hs+' hs (saldo disponible de la CUPOF)');}
-  const yaExisteFuncion=filas('FUNCIONES').some(f=>String(f[0]).trim().toLowerCase()===funcion.toLowerCase());
+  let hs=r.hs; if(hs>libre)hs=libre;
+  const yaExisteFuncion=filas('FUNCIONES').some(f=>String(f[0]).trim().toLowerCase()===r.funcion.toLowerCase());
   if(!yaExisteFuncion){
-    try{await apiPost({action:'crear',entidad:'FUNCIONES',valores:[funcion]});BD['FUNCIONES'].filas.push([funcion]);}
-    catch(e){return msg('No se pudo guardar la Función nueva: '+e.message);}
+    await apiPost({action:'crear',entidad:'FUNCIONES',valores:[r.funcion]});
+    BD['FUNCIONES'].filas.push([r.funcion]);
   }
   const docRow=filas('DOCENTES').find(x=>x[1]===docente);
   const cFila=c.fila, iCturno=ix('CUPOF','TURNO');
   const aC=cols('ASIGNACIONES');
-  const vals=aC.map(col=>({'FUENTE':'app (función)','PLAN DESTINO':PLAN_INV[planNuevo]||planNuevo,'CURSO':'','DIV.':'',
-    'TURNO':cFila?cFila[iCturno]:'','ESPACIO DESTINO':funcion,'HS':hs,'CUPOF (texto origen)':cupTexto,
+  const vals=aC.map(col=>({'FUENTE':'app (función)','PLAN DESTINO':PLAN_INV[r.planNuevo]||r.planNuevo,'CURSO':'','DIV.':'',
+    'TURNO':cFila?cFila[iCturno]:'','ESPACIO DESTINO':r.funcion,'HS':hs,'CUPOF (texto origen)':r.cupTexto,
     'DOCENTE':docente,'DNI':docRow?docRow[0]:'','OBS.':'FUNCIÓN ASIGNADA'}[col]??''));
-  try{
-    if(existente){await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:existente.i+1,valores:vals});BD['ASIGNACIONES'].filas[existente.i]=vals.map(String);}
-    else{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));}
-    await sincronizarParciales(k);
-    msg('Función asignada');rConciliadorFunciones();
-  }catch(e){msg('Error: '+e.message);}
+  if(existente){await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:existente.i+1,valores:vals});BD['ASIGNACIONES'].filas[existente.i]=vals.map(String);}
+  else{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));}
+  await sincronizarParciales(k);
+}
+/** Guarda en lote TODAS las filas de la tabla de Funciones Asignadas del docente actual que tengan
+ *  Plan + Función + Hs completos (pedido de la usuaria 07/07/2026: un solo botón para todas las CUPOF
+ *  del agente, en vez de un botón por fila). Relee los valores directo del DOM por fila (fh_/fp_/ff_ +
+ *  keyId), recalculando la misma lista que se usó para dibujar la tabla — así no hace falta pasar el
+ *  texto de la CUPOF por un atributo onclick (eso causaba el bug real reportado: JSON.stringify(cupTexto)
+ *  metía comillas dobles dentro de un atributo onclick="..." también delimitado por comillas dobles,
+ *  cortando el atributo a la mitad; el navegador quedaba con un handler de sintaxis inválida y por eso el
+ *  click no hacía nada — ni deshabilitaba el botón ni guardaba, sin ningún error visible). Muestra
+ *  progreso fila por fila con msg(), igual que genActasTodas(). */
+async function guardarFuncionesLote(){
+  const docente=funcDocSel; if(!docente)return msg('Elegí un docente');
+  const cupofs=cupofDisponiblesDeDocente(docente);
+  if(!cupofs.length)return msg('Este docente no tiene CUPOF con horas disponibles.');
+  const pendientes=cupofs.map(c=>{
+    const keyId=c.key.replace(/[^A-Za-z0-9]/g,'_');
+    const hsInput=document.getElementById('fh_'+keyId), funcInput=document.getElementById('ff_'+keyId), planInput=document.getElementById('fp_'+keyId);
+    return {cupTexto:c.cupTexto,hs:parseFloat(hsInput?.value)||0,funcion:(funcInput?.value||'').trim(),planNuevo:planInput?.value||''};
+  }).filter(r=>r.planNuevo&&r.funcion&&r.hs>0);
+  if(!pendientes.length)return msg('Completá Plan, Función y Hs a Asignar en al menos una fila para guardar.');
+  let ok=0; const errores=[];
+  for(let i=0;i<pendientes.length;i++){
+    const r=pendientes[i];
+    msg(`Guardando funciones… (${i+1}/${pendientes.length}) ${r.cupTexto}`,60000);
+    try{ await guardarUnaFuncion(docente,r); ok++; }
+    catch(e){ errores.push(`${r.cupTexto}: ${e.message}`); }
+  }
+  if(errores.length)msg(`Guardadas ${ok} de ${pendientes.length}. Con error: ${errores.join(' · ')}`,9000);
+  else msg(`Guardadas ${ok} función(es) asignada(s)`);
+  rConciliadorFunciones();
 }
 async function borrarFuncion(i){
   if(!confirm('¿Quitar esta Función Asignada?'))return;
