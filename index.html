@@ -6,6 +6,7 @@
 <title>Conciliación POF — EPES N° 14</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style/dist/xlsx.bundle.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 :root { --azul:#1F4E78; --azul2:#2E75B6; --gris:#f4f6f8; --borde:#d0d7de; --rojo:#c0392b; --verde:#1e8449; --amar:#b9770e; }
 * { box-sizing:border-box; margin:0; }
@@ -109,6 +110,12 @@ function unNum(v){const m=String(v??'').match(/\d+(?:[.,]\d+)?/);return m?parseF
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function deacc(s){return String(s??'').normalize('NFD').replace(/[̀-ͯ]/g,'');}
 function normE(s){return deacc(String(s??'')).toUpperCase().replace(/[^A-ZN0-9]/g,'');}
+/** Normaliza un valor de "curso" para comparar CURSOS.CURSO (que usa el símbolo de grado, ej. "8°") contra
+ *  CUPOF.CURSO (que para los cursos numéricos NO lo trae, ej. "8") — mismo curso, dos formatos distintos.
+ *  Sin esto, ninguna CUPOF numérica hacía match contra CURSOS y la "CARGA HORARIA" de la hoja 1 de la
+ *  planilla quedaba siempre en blanco (bug reportado por la usuaria 06/07/2026). Los cursos con letras
+ *  (módulos "M5".."M10" de BEA-EPJA) no tienen "°" en ningún lado, así que no les cambia nada. */
+function cursoNorm(s){return String(s??'').trim().replace(/°/g,'');}
 /** Nombre canónico de un docente para MOSTRAR, a partir de una fila de ASIGNACIONES: si la fila tiene DNI
  * completo, el nombre se resuelve SIEMPRE desde DOCENTES por DNI (nunca por el texto libre guardado en la
  * columna DOCENTE), para evitar que el mismo docente aparezca distinto en filas distintas (ej. "Ariel" vs
@@ -295,6 +302,12 @@ function render(tab){tab=tab||document.querySelector('nav button.act').dataset.t
 /* ============ CONCILIADOR (edición en línea) ============ */
 let selPlan='CBS-672', selCurso='1°', selDiv='I', addEsp=null, addDoc='', editIdx=null, editDoc='';
 let conTab='horas';
+/* Estado de la card "Planilla de Asignación de Horas" (Generar), separado del Conciliador para no acoplar
+ * ambas pestañas. */
+let gaModo='curso', gaPlan='CBS-672', gaCurso='1°', gaDiv='I', gaPlanSolo='CBS-672';
+const PLANES_ASIG=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
+function cursosDePlan(plan){return plan==='CBS-672'?['1°','2°','3°']:plan==='BEA-EPJA'?['M5','M6','M7','M8','M9','M10']:['4°','5°','6°'];}
+function divsDeCursoPlan(plan,curso){return (DIVS[plan]&&DIVS[plan][curso])||['I'];}
 function asigsDe(plan,curso,div){
   const iP=ix('ASIGNACIONES','PLAN DESTINO'),iC=ix('ASIGNACIONES','CURSO'),iD=ix('ASIGNACIONES','DIV.');
   return filas('ASIGNACIONES').map((f,i)=>({f,i})).filter(({f})=>PLAN_MAP[f[iP]]===plan&&String(f[iC])===String(curso)&&(!div||String(f[iD]||'I')===div));
@@ -1247,12 +1260,44 @@ function calcularValidacion(){
       dniFaltante.push({i,f,candidatos});
     });
   }
+  // ====== INSTRUMENTO/FECHA de CUPOF: formato inesperado o inconsistente dentro del mismo grupo ======
+  // Regla confirmada por la usuaria (06/07/2026): salvo las CUPOF que pertenecen a un Tiempo (tienen
+  // SUFIJO TIEMPO cargado — esas se crean con el instrumento propio del Tiempo, pueden legítimamente
+  // diferir), TODAS las CUPOF del mismo PLAN+CURSO+DIV.+TURNO deberían compartir el mismo INSTRUMENTO y
+  // la misma FECHA (las creó el mismo instrumento legal). Se detectó además que muchas filas tienen en la
+  // columna INSTRUMENTO un valor con pinta de fecha completa (ej. "1996-06-18 00:00:00") en vez del
+  // formato habitual "Res. NNNN/NN" — parece un arrastre accidental desde la columna FECHA.
+  const RE_INSTRUMENTO=/^[A-Za-zÀ-ÿ]{2,10}\.?\s*\d{1,5}\/\d{2,4}$/;
+  const iCuInstV=ix('CUPOF','INSTRUMENTO'), iCuFechaV=ix('CUPOF','FECHA'), iCuSufV=ix('CUPOF','SUFIJO TIEMPO'),
+        iCuPv=ix('CUPOF','PLAN'), iCuCv=ix('CUPOF','CURSO'), iCuDv=ix('CUPOF','DIV.'), iCuTv=ix('CUPOF','TURNO'), iCuClv=ix('CUPOF','CLASE');
+  const instrFormatoMal=[];
+  filas('CUPOF').forEach((f,i)=>{
+    if(f[iCuClv]!=='Horas'||f[iCuSufV])return; // los de un Tiempo quedan afuera de este chequeo, ver arriba
+    if(!RE_INSTRUMENTO.test(String(f[iCuInstV]||'').trim())) instrFormatoMal.push({i,f});
+  });
+  const gruposInstr={};
+  filas('CUPOF').forEach((f,i)=>{
+    if(f[iCuClv]!=='Horas'||f[iCuSufV])return;
+    const k=[f[iCuPv],cursoNorm(f[iCuCv]),f[iCuDv],f[iCuTv]].join('|');
+    (gruposInstr[k]=gruposInstr[k]||[]).push({i,f});
+  });
+  const instrInconsistente=Object.entries(gruposInstr).map(([k,items])=>{
+    const instrs=[...new Set(items.map(x=>String(x.f[iCuInstV]||'').trim()))];
+    const fechas=[...new Set(items.map(x=>String(x.f[iCuFechaV]||'').trim()))];
+    if(instrs.length<=1&&fechas.length<=1)return null;
+    const validos=[...new Set(items.filter(x=>RE_INSTRUMENTO.test(String(x.f[iCuInstV]||'').trim())).map(x=>String(x.f[iCuInstV]).trim()+'||'+String(x.f[iCuFechaV]||'').trim()))];
+    const [plan,curso,div,turno]=k.split('|');
+    return {key:k,plan,curso,div,turno,items,instrs,fechas,
+      candidato:validos.length===1?validos[0].split('||'):null, ambiguo:validos.length>1, sinValido:validos.length===0};
+  }).filter(Boolean);
   return {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
+    instrFormatoMal,instrInconsistente,
     iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,iAdniAud,HD};
 }
 function rValidador(){
   const v=document.getElementById('v-validador');
   const {problemas,sinUsar,excedidas,huerfanas,cargaMal,cargaVacia,cargaConflicto,variantesCupof,dniFaltante,sinDesigReal,
+    instrFormatoMal,instrInconsistente,
     iAcuAud,iAhAud,iAdoAud,iApAud,iAcAud,iAeAud,iAdniAud,HD}=calcularValidacion();
   v.innerHTML=`<div class="card"><h2>Validador</h2>
    <div class="fila" style="margin-bottom:8px">
@@ -1306,6 +1351,17 @@ function rValidador(){
    <p class="mini">Misma estructura (tipo · curso · división · turno · plan · carga) pero el nombre del espacio está escrito distinto en más de una fila de la hoja CUPOF. Puede ser la misma CUPOF cargada dos veces con otra redacción (unificar a mano en Datos) o dos espacios genuinamente distintos que coinciden en esos datos (no hacer nada).</p>
    ${variantesCupof.length?`<div class="tabla-wrap"><table><tr><th>ESTRUCTURA (tipo·curso·div·turno·plan·carga)</th><th>CUPOF</th><th>ESPACIO tal como está escrito</th></tr>
     ${variantesCupof.map(g=>g.items.map((it,idx)=>`<tr>${idx===0?`<td rowspan="${g.items.length}" class="mini">${esc(g.key.replace(/\|/g,' · '))}</td>`:''}<td class="cupofcell">${esc(it.cup)}</td><td>${esc(it.espacio)}</td></tr>`).join('')).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
+  </div>
+  <div class="card"><h3>CUPOF: INSTRUMENTO con formato inesperado (${instrFormatoMal.length})</h3>
+   <p class="mini">El formato habitual es "Res. NNNN/NN" (o similar: siglas + N° + año). Estas filas tienen otra cosa — muchas veces una fecha completa tipo "AAAA-MM-DD 00:00:00" que parece un arrastre desde la columna FECHA. No incluye las CUPOF que pertenecen a un Tiempo (SUFIJO TIEMPO cargado), que se crean con el instrumento propio del Tiempo. Si el grupo (mismo plan+curso+división+turno) de esa CUPOF tiene abajo un valor sugerido, se puede aplicar en lote desde la tabla siguiente; si no, hay que corregirla a mano.</p>
+   ${instrFormatoMal.length?`<div class="tabla-wrap"><table><tr><th>CUPOF</th><th>PLAN</th><th>CURSO/DIV/TURNO</th><th>INSTRUMENTO actual</th><th>FECHA actual</th><th></th></tr>
+    ${instrFormatoMal.map(({f,i})=>`<tr><td class="cupofcell">${esc(f[0])}</td><td>${esc(f[ix('CUPOF','PLAN')])}</td><td>${esc(f[ix('CUPOF','CURSO')])}/${esc(f[ix('CUPOF','DIV.')])}/${esc(f[ix('CUPOF','TURNO')])}</td><td>${esc(f[ix('CUPOF','INSTRUMENTO')]||'(vacío)')}</td><td>${esc(f[ix('CUPOF','FECHA')]||'')}</td><td>${ROL==='admin'?`<a href="#" onclick="editarFila('CUPOF',${i});return false">corregir</a>`:''}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguna ✔</p>'}
+  </div>
+  <div class="card"><h3>CUPOF: mismo plan/curso/división/turno con INSTRUMENTO o FECHA distintos (${instrInconsistente.length} grupos)</h3>
+   <p class="mini">Excluye las CUPOF que pertenecen a un Tiempo. Cuando en el grupo hay exactamente un valor con formato válido, se puede aplicar ese valor a todas las filas del grupo de un solo saque con el botón de abajo (nunca se pisa si ya coinciden). Los grupos sin un valor válido claro (ambiguos o sin ninguno) quedan marcados para revisar a mano.</p>
+   ${instrInconsistente.length?`<div class="fila" style="margin:6px 0">${ROL==='admin'&&instrInconsistente.some(g=>g.candidato)?`<button class="b sec mini" onclick="accion(this,repararInstrumentoLote)">✔ Aplicar el valor válido en los grupos que tienen uno solo</button>`:''}</div>
+    <div class="tabla-wrap"><table><tr><th>PLAN</th><th>CURSO/DIV/TURNO</th><th>Filas</th><th>INSTRUMENTO encontrados</th><th>FECHA encontradas</th><th>Se aplicaría</th></tr>
+    ${instrInconsistente.map(g=>`<tr><td>${esc(g.plan)}</td><td>${esc(g.curso)}/${esc(g.div)}/${esc(g.turno)}</td><td>${g.items.length}</td><td class="mini">${g.instrs.map(esc).join(' / ')}</td><td class="mini">${g.fechas.map(esc).join(' / ')}</td><td>${g.candidato?`<span class="pill ok">${esc(g.candidato[0])} (${esc(g.candidato[1])})</span>`:g.ambiguo?'<span class="pill exceso">2+ valores válidos — revisar a mano</span>':'<span class="pill falta">ningún valor válido en el grupo</span>'}</td></tr>`).join('')}</table></div>`:'<p class="mini">Ninguno ✔</p>'}
   </div>`;
 }
 
@@ -1385,6 +1441,37 @@ async function confirmarDniLote(){
     catch(e){ fallidas.push((p.f[iAdo]||'')+' ('+e.message+')'); }
   }
   msg(`DNI confirmados: ${ok}${fallidas.length?` · ${fallidas.length} no se pudieron aplicar`:''}`, 6000);
+  if(fallidas.length) console.warn('No se pudieron aplicar:', fallidas);
+  render();
+}
+
+/** Aplica en un solo lote el valor de INSTRUMENTO+FECHA a todas las filas de CUPOF que pertenecen a un
+ *  grupo (mismo plan+curso+división+turno, sin Tiempo) donde se detectó EXACTAMENTE un valor válido entre
+ *  sus filas (ver instrInconsistente en calcularValidacion): esas filas se llevan al mismo valor que ya
+ *  tiene su(s) hermana(s) "sana(s)". Grupos ambiguos (2+ valores válidos distintos) o sin ningún valor
+ *  válido se saltan — no hay un candidato claro para pisar, quedan para revisar a mano. Vuelve a chequear
+ *  el valor actual de cada fila antes de escribir, por si alguien ya la corrigió mientras tanto. */
+async function repararInstrumentoLote(){
+  const {instrInconsistente}=calcularValidacion();
+  const aplicables=instrInconsistente.filter(g=>g.candidato);
+  if(!aplicables.length)return msg('No hay grupos con un único valor válido para aplicar.');
+  const iInst=ix('CUPOF','INSTRUMENTO'), iFecha=ix('CUPOF','FECHA');
+  const totalFilas=aplicables.reduce((a,g)=>a+g.items.filter(x=>String(x.f[iInst]||'').trim()+'||'+String(x.f[iFecha]||'').trim()!==g.candidato.join('||')).length,0);
+  if(!totalFilas)return msg('Ya está todo aplicado — no hay filas para cambiar.');
+  if(!confirm(`Vas a igualar INSTRUMENTO y FECHA en ${totalFilas} filas de CUPOF (repartidas en ${aplicables.length} grupos plan+curso+división+turno), usando el único valor válido que ya tiene alguna CUPOF hermana del mismo grupo. ¿Confirmar?`))return;
+  let ok=0, fallidas=[];
+  for(const g of aplicables){
+    const [instr,fecha]=g.candidato;
+    for(const {i,f} of g.items){
+      if(String(f[iInst]||'').trim()+'||'+String(f[iFecha]||'').trim()===instr+'||'+fecha)continue; // ya está bien
+      const actualEnBD=BD['CUPOF'].filas[i];
+      if(String(actualEnBD[iInst]||'').trim()+'||'+String(actualEnBD[iFecha]||'').trim()===instr+'||'+fecha)continue; // ya lo corrigieron
+      const nuevos=actualEnBD.slice(); nuevos[iInst]=instr; nuevos[iFecha]=fecha;
+      try{ await apiPost({action:'editar',entidad:'CUPOF',fila:i+1,valores:nuevos}); BD['CUPOF'].filas[i]=nuevos; ok++; }
+      catch(e){ fallidas.push(f[0]+' ('+e.message+')'); }
+    }
+  }
+  msg(`INSTRUMENTO/FECHA aplicados en ${ok} filas${fallidas.length?` · ${fallidas.length} no se pudieron aplicar`:''}`, 6000);
   if(fallidas.length) console.warn('No se pudieron aplicar:', fallidas);
   render();
 }
@@ -1513,6 +1600,10 @@ function rReportes(){
 function rGenerar(){
   const v=document.getElementById('v-generar');
   const docs=filas('DOCENTES').map(f=>f[1]).sort();
+  const gaCursos=cursosDePlan(gaModo==='curso'?gaPlan:gaPlanSolo);
+  if(!gaCursos.includes(gaCurso))gaCurso=gaCursos[0];
+  const gaDivs=divsDeCursoPlan(gaModo==='curso'?gaPlan:gaPlanSolo,gaCurso);
+  if(!gaDivs.includes(gaDiv))gaDiv=gaDivs[0];
   v.innerHTML=`
   <div class="card"><h2>Planilla de Conciliación — 1ª etapa (DES)</h2>
    <p class="mini">Excel con las 4 hojas del modelo oficial, con los datos actuales.</p><br>
@@ -1524,8 +1615,32 @@ function rGenerar(){
    <div class="fila" style="margin-top:10px">
     <button class="b" onclick="accion(this,()=>genActa('doc'))">Acta Word</button>
     <button class="b" onclick="accion(this,()=>genActa('pdf'))">Acta PDF</button>
-    <button class="b sec" onclick="accion(this,()=>genActasTodas('doc'))">TODAS en Word</button>
-    <button class="b sec" onclick="accion(this,()=>genActasTodas('pdf'))">TODAS en PDF</button></div></div>`;
+    <button class="b sec" onclick="accion(this,()=>genActasTodas('doc'))">TODAS en Word (un archivo por docente, en ZIP)</button>
+    <button class="b sec" onclick="accion(this,()=>genActasTodas('pdf'))">TODAS en PDF (un archivo por docente, en ZIP)</button></div></div>
+  <div class="card"><h2>Planilla de Asignación de Horas (para imprimir)</h2>
+   <p class="mini">Misma estructura que la card "Asignación de Horas" del Conciliador, sin los controles de edición. Hoja A4 horizontal.</p>
+   <div class="fila" style="margin-top:6px">
+    <div><label>Alcance</label><select id="gaModo">
+      <option value="curso" ${gaModo==='curso'?'selected':''}>Un curso y división</option>
+      <option value="plan" ${gaModo==='plan'?'selected':''}>Un plan completo</option>
+      <option value="todos" ${gaModo==='todos'?'selected':''}>Todos los planes</option>
+    </select></div>
+    ${gaModo==='curso'?`
+    <div><label>Plan</label><select id="gaPlan">${PLANES_ASIG.map(p=>`<option ${p===gaPlan?'selected':''}>${p}</option>`).join('')}</select></div>
+    <div><label>Curso</label><select id="gaCurso">${gaCursos.map(c=>`<option ${c===gaCurso?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div><label>División</label><select id="gaDiv">${gaDivs.map(d=>`<option ${d===gaDiv?'selected':''}>${d}</option>`).join('')}</select></div>`:''}
+    ${gaModo==='plan'?`<div><label>Plan</label><select id="gaPlanSolo">${PLANES_ASIG.map(p=>`<option ${p===gaPlanSolo?'selected':''}>${p}</option>`).join('')}</select></div>`:''}
+   </div>
+   <div class="fila" style="margin-top:10px">
+    <button class="b" onclick="accion(this,()=>genPlanillaAsignacion('doc'))">Descargar Word</button>
+    <button class="b" onclick="accion(this,()=>genPlanillaAsignacion('pdf'))">Descargar PDF</button></div></div>`;
+  document.getElementById('gaModo').onchange=e=>{gaModo=e.target.value;rGenerar();};
+  if(gaModo==='curso'){
+    document.getElementById('gaPlan').onchange=e=>{gaPlan=e.target.value;rGenerar();};
+    document.getElementById('gaCurso').onchange=e=>{gaCurso=e.target.value;rGenerar();};
+    document.getElementById('gaDiv').onchange=e=>{gaDiv=e.target.value;rGenerar();};
+  }
+  if(gaModo==='plan') document.getElementById('gaPlanSolo').onchange=e=>{gaPlanSolo=e.target.value;rGenerar();};
 }
 /* ============ PLANILLA OFICIAL: helpers de formato y de nombres completos (agregado 06/07/2026) ============ */
 const INSTITUCION_HEADER='EPES N° 14 "Tte. Cnel. Francisco Magín Guerrero" - CUE: 3400532-00 - Comandante Fontana';
@@ -1621,7 +1736,7 @@ function genPlanilla(){
   filas('CURSOS').forEach(f=>{
     const instr=f[iCrI1]||f[iCrI2]||'',fecha=(f[iCrI1]?f[iCrF1]:f[iCrF2])||'';
     const divs=String(f[iCrD]||'').split('/').map(x=>x.trim()).filter(Boolean);
-    const carga=filas('CUPOF').filter(c=>c[iCuCl]==='Horas'&&!c[iCuSuf]&&String(c[iCuP]).trim().toUpperCase()===String(f[iCrP]).trim().toUpperCase()&&String(c[iCuC]).trim()===String(f[iCrC]).trim()&&divs.includes(String(c[iCuD]).trim())).reduce((a,c)=>a+unNum(c[iCuCa]),0);
+    const carga=filas('CUPOF').filter(c=>c[iCuCl]==='Horas'&&!c[iCuSuf]&&String(c[iCuP]).trim().toUpperCase()===String(f[iCrP]).trim().toUpperCase()&&cursoNorm(c[iCuC])===cursoNorm(f[iCrC])&&divs.includes(String(c[iCuD]).trim())).reduce((a,c)=>a+unNum(c[iCuCa]),0);
     h1.push([f[iCrC],f[iCrD],nombrePlan(f[iCrP]),instr,fecha,carga||'']);});
   const ws1=XLSX.utils.aoa_to_sheet(h1);
   encabezadoInstitucion(ws1,6);
@@ -1719,16 +1834,24 @@ function genPlanilla(){
  * línea queda sangrada 3cm, igual que en el modelo). */
 const ACTA_CSS=`@page{size:215.9mm 355.6mm;margin:25mm 30mm}
 body{font-family:Arial,sans-serif;font-size:12pt;margin:24px}h1{text-align:center;font-size:14pt}
-table{border-collapse:collapse;width:100%;margin:8px 0}
-th{background:#d9d9d9;color:#000;border:1px solid #777;padding:3px 5px;font-size:8.5pt;white-space:nowrap}
-td{border:1px solid #777;padding:3px 5px;font-size:8.5pt}
-td.cup{font-size:7.5pt;white-space:nowrap;font-family:Consolas,monospace}
+/* table-layout:fixed + wrap (en vez de white-space:nowrap) para que ninguna celda empuje la tabla más
+ * allá del área de impresión — antes los códigos CUPOF largos y los encabezados forzaban overflow y el
+ * contenido quedaba cortado en el PDF (reportado por la usuaria 06/07/2026). Los anchos reales de cada
+ * columna se fijan con <colgroup> en cada tabla (ver actaHTML). */
+table{border-collapse:collapse;width:100%;margin:8px 0;table-layout:fixed}
+th{background:#d9d9d9;color:#000;border:1px solid #777;padding:2px 4px;font-size:8pt;overflow-wrap:break-word;word-break:break-word}
+td{border:1px solid #777;padding:2px 4px;font-size:8pt;overflow-wrap:break-word;word-break:break-word;vertical-align:top}
+td.cup{font-size:7pt;font-family:Consolas,monospace;overflow-wrap:anywhere;word-break:break-all}
 .tiempoHead{background:#e8e8e8;font-weight:bold;text-align:center;padding:4px;border:1px solid #777;margin:10px 0 0}
 p{text-align:justify;margin:7px 0}.salto{page-break-before:always}
 .actap{text-indent:1cm}
 .consid{text-indent:2.75cm}
 .artic{margin-left:3cm;text-indent:-3cm}
 .hdr{font-weight:bold}`;
+/** Genera un <colgroup> con anchos porcentuales fijos — necesario porque table-layout:fixed reparte el
+ *  ancho por igual entre columnas si no se le indica lo contrario, y estas tablas tienen columnas muy
+ *  dispares (un código CUPOF completo vs. "DIV"). */
+function colgroup(anchos){return '<colgroup>'+anchos.map(a=>`<col style="width:${a}%">`).join('')+'</colgroup>';}
 /* Constantes legales fijas del modelo (Res. de la reforma, marco legal, localidad, firma). Se repiten
  * igual en toda acta — si en algún momento cambian, se actualizan acá una sola vez. */
 const LOCALIDAD='Comandante Fontana';
@@ -1749,11 +1872,28 @@ function tiempoDeDocente(docente){
   return{sufijo:t[ix('TIEMPOS','SUFIJO')],tipo:t[ix('TIEMPOS','TIPO')],hs:t[ix('TIEMPOS','HS')],
     instrumento:t[ix('TIEMPOS','INSTRUMENTO')],fecha:t[ix('TIEMPOS','FECHA')],esSuplente};
 }
-/** Situación de revista más frecuente entre las designaciones del docente (para las tablas del acta). */
+/** Situación de revista más frecuente entre TODAS las designaciones del docente — usada solo como
+ *  respaldo (ver situacionDeCupof abajo) cuando no se encuentra una designación puntual para la CUPOF en
+ *  cuestión. NO debe usarse como la situación de una fila específica del acta: un mismo docente puede ser
+ *  TITULAR en una CUPOF e INTERINO/SUPLENTE en otra, y usar "la más frecuente" para todas las filas hacía
+ *  que algunas CUPOF aparecieran en el acta con una situación de revista errónea (reportado por la
+ *  usuaria 06/07/2026). */
 function situacionDeDocente(docente){
   const iDdoc=ix('DESIGNACIONES','DOCENTE'),iDsit=ix('DESIGNACIONES','SIT. REVISTA');
   const cont={};filas('DESIGNACIONES').forEach(f=>{if(f[iDdoc]&&normE(f[iDdoc])===normE(docente)){const s=f[iDsit]||'';cont[s]=(cont[s]||0)+1;}});
   const top=Object.entries(cont).sort((a,b)=>b[1]-a[1])[0];return top?top[0]:'';
+}
+/** Situación de revista REAL de este docente en ESTA CUPOF puntual, leída de DESIGNACIONES (que es la
+ *  fuente de verdad). Si por algún motivo no hay una designación cargada para ese par docente+CUPOF
+ *  (dato faltante), cae al respaldo de situacionDeDocente() en vez de dejar la celda vacía. */
+function situacionDeCupof(docente,cupofTexto){
+  const iDdoc=ix('DESIGNACIONES','DOCENTE'),iDcup=ix('DESIGNACIONES','CUPOF'),iDsit=ix('DESIGNACIONES','SIT. REVISTA');
+  const k=cupKey(cupofTexto);
+  if(k){
+    const f=filas('DESIGNACIONES').find(d=>d[iDdoc]&&normE(d[iDdoc])===normE(docente)&&cupKey(d[iDcup])===k);
+    if(f)return f[iDsit]||'';
+  }
+  return situacionDeDocente(docente);
 }
 /** Materia/especialidad del docente a partir de la columna TÍTULOS (si existe): toma los títulos de nivel
  *  "Secundaria-" y extrae lo que sigue a la última "EN " de cada uno. Si hay más de una titulación
@@ -1799,7 +1939,12 @@ function destinosDeDocente(docente,tiempo){
     const origTxt=String(a[iAcu]||'');
     const esDeTiempo=tiempo&&origTxt.includes(tiempo.sufijo);
     const tokens=origTxt.split(/\s+(?=0{0,4}\d?53200)/).filter(Boolean);
-    const item={plan:a[iAp],curso:a[iAc],div:a[iAd],turno:a[iAt],espacio:a[iAe],hs:a[iAh],origen:origTxt,obs:a[iAo],
+    // Situación de revista real del docente en la CUPOF de ORIGEN (la que se está reasignando), no la más
+    // frecuente entre todas sus designaciones — mismo motivo que en origenesDeDocente/situacionDeCupof.
+    // Si el origen combina más de una CUPOF (reasignación de varias partes a la vez), se toma la de la
+    // primera: en la práctica todas corresponden a la misma designación del mismo docente.
+    const sitOrigen=tokens.length?situacionDeCupof(docente,tokens[0]):situacionDeDocente(docente);
+    const item={plan:a[iAp],curso:a[iAc],div:a[iAd],turno:a[iAt],espacio:a[iAe],hs:a[iAh],origen:origTxt,obs:a[iAo],sit:sitOrigen,
       origenes:tokens.map(tok=>{const c=cupIdx[cupKey(tok)];return{texto:tok.trim(),instrumento:c?c[ix('CUPOF','INSTRUMENTO')]:''};})};
     (esDeTiempo?conTiempo:sueltas).push(item);
   });
@@ -1831,34 +1976,43 @@ function actaHTML(docente){
   const tiempo=tiempoDeDocente(docente);
   const{conTiempo:origConTiempo,sueltas:origSueltas}=origenesDeDocente(docente,tiempo);
   const{conTiempo:destConTiempo,sueltas:destSueltas}=destinosDeDocente(docente,tiempo);
-  const sit=situacionDeDocente(docente);
+  // "sit" ya NO se usa como situación blanket para todas las filas del acta (ver situacionDeCupof arriba):
+  // cada fila de origen (o.sit) y cada grupo de destino (g.items[0].sit) trae su propia situación real,
+  // leída de DESIGNACIONES para esa CUPOF puntual. Se conserva solo para el encabezado/tratamiento si hiciera falta.
   const espacioRef=(origConTiempo[0]||origSueltas[0]||{}).espacio||(destConTiempo[0]||destSueltas[0]||{}).espacio||'';
   const materia=materiaDeDocente(docente,espacioRef);
   const tratamiento=materia?`profesor/a de ${esc(materia)}`:'docente';
   const hsSueltas=sumHs(destSueltas);
-  const filaOrigen=o=>`<tr><td>${esc(o.curso)}</td><td>${esc(o.div)}</td><td>${esc(o.carga)}</td><td>${esc(o.espacio)}/${esc(o.plan)}/${esc(sit)}/<span class="cup">${esc(o.cupofTxt)}</span></td></tr>`;
-  const filaDestinoGrupo=g=>{const n=g.items.length;return g.items.map((it,j)=>`<tr>${j===0?
-    `<td rowspan="${n}">${esc(g.curso)}</td><td rowspan="${n}">${esc(g.div)}</td><td rowspan="${n}">${esc(g.horasCaja)}</td><td rowspan="${n}">${esc(sit)}</td><td rowspan="${n}">${esc(g.espacio)}</td>`:''}
+  const filaOrigen=o=>`<tr><td>${esc(o.curso)}</td><td>${esc(o.div)}</td><td>${esc(o.carga)}</td><td>${esc(o.espacio)}/${esc(o.plan)}/${esc(o.sit)}/<span class="cup">${esc(o.cupofTxt)}</span></td></tr>`;
+  // Fila de "reasignaciones": ahora arranca con el Plan (sigla corta, PLAN_MAP) como primera columna —
+  // pedido de la usuaria 06/07/2026 para poder identificar el destino sin abrir el CUPOF. La situación de
+  // revista mostrada es la del PRIMER item del grupo (todas las CUPOF de un mismo grupo de reasignación
+  // pertenecen a la misma designación real), leída de DESIGNACIONES — no una situación genérica del docente.
+  const filaDestinoGrupo=g=>{const n=g.items.length;const planSigla=PLAN_MAP[g.plan]||g.plan;const sitGrupo=g.items[0]?.sit||'';return g.items.map((it,j)=>`<tr>${j===0?
+    `<td rowspan="${n}">${esc(planSigla)}</td><td rowspan="${n}">${esc(g.curso)}</td><td rowspan="${n}">${esc(g.div)}</td><td rowspan="${n}">${esc(g.horasCaja)}</td><td rowspan="${n}">${esc(sitGrupo)}</td><td rowspan="${n}">${esc(g.espacio)}</td>`:''}
     <td class="cup">${esc(it.origen)}</td><td>${esc(it.hs)}</td></tr>`).join('');};
   const filaResumenTiempo=r=>`<tr><td class="cup">${esc(r.origen)}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td><td>${esc(r.turno||'')}</td></tr>`;
   const filaResumenSuelta=r=>`<tr><td class="cup">${r.origenes.map(o=>`${esc(o.texto)}${o.instrumento?'<br>'+esc(o.instrumento):''}`).join('<br>')}</td><td>${esc(r.espacio)}</td><td>${esc(r.hs)}</td><td>${esc(r.curso)}</td><td>${esc(r.div)}</td></tr>`;
 
   const bloqueTiempo=tiempo?`<p class="tiempoHead">${esc(tiempo.tipo)}-${esc(tiempo.hs)} horas- ${esc(tiempo.instrumento)}</p>
-   <table><tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
+   <table>${colgroup([8,6,10,76])}<tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
    ${origConTiempo.map(filaOrigen).join('')||'<tr><td colspan="4">(sin datos)</td></tr>'}</table>`:'';
   const bloqueSueltas=origSueltas.length?`<p style="font-weight:bold;margin:10px 0 4px">HORAS CÁTEDRAS</p>
-   <table><tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
+   <table>${colgroup([8,6,10,76])}<tr><th>CURSO</th><th>DIV</th><th>CARGA HORARIA</th><th>ESPACIO CURRICULAR/PLAN DE ESTUDIO/SITUACIÓN DE REVISTA Y CUPOF</th></tr>
    ${origSueltas.map(filaOrigen).join('')}</table>`:'';
+  // Reasignaciones: Plan(sigla), Curso, División, Horas (antes "carga horaria"/"CARGA HORA" — se acorta
+  // el título para reducir el ancho de esa columna), Sit. Revista, Espacio Curricular Actual (antes decía
+  // "Curso actual"), CUPOF, Hs — pedido explícito de la usuaria 06/07/2026.
   const aceptaTiempo=destConTiempo.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table><tr><th>curso</th><th>DIV</th><th>horas</th><th>Sit.de revista</th><th>Espacio Curricular actual</th><th>CUPOF</th><th>hs</th></tr>
+   <table>${colgroup([7,7,6,7,11,24,30,8])}<tr><th>Plan</th><th>Curso</th><th>Div</th><th>Horas</th><th>Sit. Revista</th><th>Espacio Curricular Actual</th><th>CUPOF</th><th>Hs</th></tr>
    ${agruparPorEspacio(destConTiempo).map(filaDestinoGrupo).join('')}</table>`:'';
   const aceptaSueltas=destSueltas.length?`<p>A tal efecto ACEPTA DESEMPEÑARSE en los espacios curriculares ${RES_MARCO}</p>
-   <table><tr><th>CURSO</th><th>DIV</th><th>CARGA HORA</th><th>SIT. REVISTA</th><th>Curso actual</th><th>CUPOF</th><th>hs</th></tr>
+   <table>${colgroup([7,7,6,7,11,24,30,8])}<tr><th>Plan</th><th>Curso</th><th>Div</th><th>Horas</th><th>Sit. Revista</th><th>Espacio Curricular Actual</th><th>CUPOF</th><th>Hs</th></tr>
    ${agruparPorEspacio(destSueltas).map(filaDestinoGrupo).join('')}</table>`:'';
-  const resumenTiempo=destConTiempo.length?`<table><tr><th>CUPOF:HISTÓRICAS</th><th>REASIGNADO EN</th><th>hs</th><th>curso</th><th>DIV</th><th>TURNO</th></tr>
+  const resumenTiempo=destConTiempo.length?`<table>${colgroup([26,30,8,10,8,18])}<tr><th>CUPOF:HISTÓRICAS</th><th>REASIGNADO EN</th><th>hs</th><th>curso</th><th>DIV</th><th>TURNO</th></tr>
    ${destConTiempo.map(filaResumenTiempo).join('')}</table>`:'';
   const resumenSueltas=destSueltas.length?`<p>Y la reasignación de ${numALetras(hsSueltas)} (${hsSueltas}) horas cátedra${destSueltas[0]?` al ${esc(destSueltas[0].plan)}`:''} ${RES_MARCO}</p>
-   <table><tr><th>CUPOF-Resolución</th><th>REASIGNADO</th><th>HORAS</th><th>CURSO</th><th>DIV</th></tr>
+   <table>${colgroup([32,32,8,14,14])}<tr><th>CUPOF-Resolución</th><th>REASIGNADO</th><th>HORAS</th><th>CURSO</th><th>DIV</th></tr>
    ${destSueltas.map(filaResumenSuelta).join('')}</table>`:'';
 
   return `<h1>ACTA DE ACUERDO REASIGNACIÓN DE FUNCIONES</h1>
@@ -1905,13 +2059,113 @@ function genActa(fmt){
   else bajarPDF(`Acta Acuerdo y Disposicion - ${doc}.pdf`,html);
   msg('Acta generada: '+doc);
 }
-function genActasTodas(fmt){
+/** Genera el PDF de una acta como Blob (en vez de bajarlo directo), para meterlo en el ZIP del lote. */
+async function actaPdfBlob(html){
+  const el=document.createElement('div');el.innerHTML=`<style>${ACTA_CSS}</style>`+html;
+  return html2pdf().set({margin:[25,30,25,30],jsPDF:{unit:'mm',format:[215.9,355.6]},html2canvas:{scale:2}}).from(el).outputPdf('blob');
+}
+/** Genera TODAS las actas de golpe, pero como archivos INDIVIDUALES por docente (uno por uno, no un único
+ *  archivo con todas juntas) — pedido de la usuaria 06/07/2026 — empaquetados en un solo ZIP para que la
+ *  descarga sea manejable. Muestra progreso "(i/total)" con msg() a medida que arma cada archivo, en línea
+ *  con el pedido anterior de feedback de progreso en acciones en lote. */
+async function genActasTodas(fmt){
+  if(typeof JSZip==='undefined')return msg('No cargó la librería de ZIP');
   const lst=docentesConDestino();
-  if(!confirm(`Se generará UN archivo con ${lst.length} actas (docentes con asignaciones). ¿Continuar?`))return;
-  const cuerpo=lst.map((d,i)=>`${i?'<div class="salto"></div>':''}${actaHTML(d)}`).join('');
-  if(fmt==='doc')bajarDoc('Actas Acuerdo y Disposicion - TODAS.doc',envolver(cuerpo));
-  else bajarPDF('Actas Acuerdo y Disposicion - TODAS.pdf',cuerpo);
-  msg('Generadas '+lst.length+' actas en un solo archivo');
+  if(!confirm(`Se generarán ${lst.length} actas, una archivo por docente, dentro de un único ZIP. ¿Continuar?`))return;
+  const zip=new JSZip();
+  for(let i=0;i<lst.length;i++){
+    const d=lst[i];
+    msg(`Generando actas… (${i+1}/${lst.length}) ${d}`,60000);
+    const html=actaHTML(d);
+    const nombre=`Acta Acuerdo y Disposicion - ${d}`;
+    if(fmt==='doc') zip.file(nombre+'.doc','﻿'+envolver(html));
+    else zip.file(nombre+'.pdf', await actaPdfBlob(html));
+  }
+  msg('Comprimiendo ZIP…',60000);
+  const blob=await zip.generateAsync({type:'blob'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`Actas Acuerdo y Disposicion - TODAS (${fmt.toUpperCase()}).zip`;a.click();
+  msg(`Generadas ${lst.length} actas individuales dentro de un ZIP`);
+}
+
+/* ============ PLANILLA DE ASIGNACIÓN DE HORAS (para imprimir, A4 horizontal) ============
+ * Pedido de la usuaria 06/07/2026: poder imprimir la card "Asignación de Horas" del Conciliador tal
+ * cual se ve en pantalla, PERO sin la última columna de botones (✎/🗑, que no tienen sentido en papel)
+ * y sin las anotaciones que acompañan al CUPOF en pantalla (N° parcial, observaciones entre paréntesis):
+ * el campo CUPOF debe quedar limpio. Tres alcances: un curso+división, un plan completo (todos sus
+ * cursos/divisiones), o todos los planes. */
+const ASIG_CSS=`@page{size:297mm 210mm;margin:12mm 14mm}
+body{font-family:Arial,sans-serif;font-size:10pt;margin:16px}
+h1{text-align:center;font-size:13pt;margin-bottom:2px}
+h2.sub{text-align:center;font-size:10pt;font-weight:normal;color:#444;margin:0 0 10px}
+h3{font-size:10.5pt;margin:12px 0 4px;color:#1F4E78}
+table{border-collapse:collapse;width:100%;margin:2px 0 10px;table-layout:fixed}
+th{background:#1F4E78;color:#fff;padding:3px 5px;font-size:8pt;text-align:left;overflow-wrap:break-word}
+td{border:1px solid #aab4bd;padding:3px 5px;font-size:8pt;overflow-wrap:break-word;vertical-align:top}
+td.esp{background:#eef3f8;font-weight:bold}
+td.cup{font-family:Consolas,monospace;font-size:7pt;overflow-wrap:anywhere;word-break:break-all}
+.pill{display:inline-block;padding:1px 6px;border-radius:8px;font-size:7.5pt;color:#fff;white-space:nowrap}
+.ok{background:#1e8449}.falta{background:#c0392b}.exceso{background:#b9770e}.info{background:#8395a7}
+.mini{font-size:7.5pt;color:#666}
+.saltoPlan{page-break-before:always}`;
+/** Tabla de una sola combinación plan/curso/división, misma lógica que rConciliadorHoras (caja vs.
+ *  asignado por espacio) pero sin edición: docente y CUPOF en texto plano, sin pills de N° parcial ni
+ *  observaciones, y sin la columna de botones (la columna ESTADO conserva el pill completo/faltan/excede,
+ *  que sí es información útil impresa, pero pierde los enlaces ✎/🗑). */
+function tablaAsignacionHoras(plan,curso,div){
+  const caja=cajaDe(plan,curso,true);
+  const asigs=asigsDe(plan,curso,div);
+  const iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAdo=ix('ASIGNACIONES','DOCENTE'),iAdni=ix('ASIGNACIONES','DNI');
+  const porEsp={}; caja.forEach(c=>porEsp[c.n]=[]);
+  asigs.forEach(x=>{const m=matchEspacio(x.f[iAe],caja); if(m)porEsp[m.n].push(x);});
+  let filasHtml='';
+  caja.forEach(c=>{
+    const lst=porEsp[c.n];
+    const asg=lst.reduce((a,{f})=>a+(cupKey(f[iAcu])?unNum(f[iAh]):0),0);
+    const falta=c.hs-asg;
+    const est=(asg===c.hs?'<span class="pill ok">completo</span>':asg<c.hs?`<span class="pill falta">faltan ${falta}</span>`:`<span class="pill exceso">excede ${asg-c.hs}</span>`)+(c.fuera?' <span class="pill info">fuera de caja</span>':'');
+    if(!lst.length){ filasHtml+=`<tr><td class="esp">${esc(c.nom)}</td><td>${c.hs}</td><td colspan="2" class="mini">— sin asignaciones —</td><td>${est}</td></tr>`; return; }
+    lst.forEach(({f},pos)=>{
+      const esVac=!cupKey(f[iAcu]);
+      filasHtml+=`<tr>${pos===0?`<td class="esp" rowspan="${lst.length}">${esc(c.nom)}</td><td rowspan="${lst.length}">${c.hs}</td>`:''}
+       <td>${esVac?'—':esc(nombreAsigCanonico(f,iAdo,iAdni))}</td>
+       <td class="cup">${esVac?'<span class="pill falta">VACANTE</span>':esc(f[iAcu])}</td>
+       <td>${esc(f[iAh])}</td>
+       <td>${pos===0?est:''}</td></tr>`;
+    });
+  });
+  return `<h3>${esc(PLAN_INV[plan]||plan)} — ${esc(curso)} ${esc(div)}</h3>
+   <table>${colgroup([24,8,20,26,8,14])}<tr><th>ESPACIO</th><th>HS CAJA</th><th>DOCENTE</th><th>CUPOF</th><th>HS ASIG.</th><th>ESTADO</th></tr>${filasHtml}</table>`;
+}
+function planillaAsignacionHTML(){
+  let cuerpo='';
+  if(gaModo==='curso'){
+    cuerpo=tablaAsignacionHoras(gaPlan,gaCurso,gaDiv);
+  } else if(gaModo==='plan'){
+    cursosDePlan(gaPlanSolo).forEach(curso=>{
+      divsDeCursoPlan(gaPlanSolo,curso).forEach(div=>{cuerpo+=tablaAsignacionHoras(gaPlanSolo,curso,div);});
+    });
+  } else {
+    PLANES_ASIG.forEach((plan,pi)=>{
+      if(pi)cuerpo+='<div class="saltoPlan"></div>';
+      cursosDePlan(plan).forEach(curso=>{
+        divsDeCursoPlan(plan,curso).forEach(div=>{cuerpo+=tablaAsignacionHoras(plan,curso,div);});
+      });
+    });
+  }
+  return `<h1>${INSTITUCION_HEADER}</h1><h2 class="sub">Planilla de Asignación de Horas</h2>${cuerpo}`;
+}
+function genPlanillaAsignacion(fmt){
+  const html=planillaAsignacionHTML();
+  const nombreBase='Planilla Asignacion de Horas - '+(gaModo==='curso'?`${gaPlan} ${gaCurso}${gaDiv}`:gaModo==='plan'?gaPlanSolo:'TODOS los planes');
+  if(fmt==='doc'){
+    bajarDoc(nombreBase+'.doc', `<html><head><meta charset="utf-8"><style>${ASIG_CSS}</style></head><body>${html}</body></html>`);
+  } else {
+    if(typeof html2pdf==='undefined')return msg('No cargó la librería de PDF');
+    const el=document.createElement('div');el.innerHTML=`<style>${ASIG_CSS}</style>`+html;
+    html2pdf().set({filename:nombreBase+'.pdf',margin:[12,14,12,14],jsPDF:{unit:'mm',format:'a4',orientation:'landscape'},html2canvas:{scale:2}}).from(el).save();
+  }
+  msg('Planilla de Asignación de Horas generada');
 }
 
 /* ============ AUDITORÍA ============ */
