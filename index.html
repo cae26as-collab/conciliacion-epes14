@@ -1974,6 +1974,29 @@ function nombrePlan(sigla){
 const FUENTE_PLANILLA={name:'Times New Roman',sz:11};
 const BORDE_FINO={style:'thin',color:{rgb:'000000'}};
 const BORDE_TODO={top:BORDE_FINO,bottom:BORDE_FINO,left:BORDE_FINO,right:BORDE_FINO};
+/** Ajusta el ancho de cada columna de una hoja a su contenido más largo — Excel no lo hace solo cuando la
+ *  hoja se arma por código (a diferencia de cuando alguien la escribe a mano), y quedaban todas las
+ *  columnas al ancho por defecto sin importar el contenido (pedido de la usuaria 08/07/2026). Para cada
+ *  columna toma la línea más larga de cada celda (partiendo por "\n", por si el texto tiene saltos de
+ *  línea como los encabezados con wrapText), con un mínimo y un máximo razonables: sin el máximo, un
+ *  encabezado largo (que ya viene pensado para envolverse en 2-3 líneas) dejaría la columna gigante en vez
+ *  de angosta. Se descarta la fila 0 (el título institucional, mergeado en toda la fila) porque si se
+ *  la tuviera en cuenta ensancharía la columna A sola a lo ancho de ese título completo.
+ *  Debe llamarse ANTES de estilizarPlanilla (usa el mismo aoa que se le pasó a aoa_to_sheet, no lee las
+ *  celdas ya estilizadas). */
+function autoAjustarColumnas(ws,aoa,{min=8,max=55}={}){
+  const nCols=Math.max(...aoa.map(r=>r.length));
+  const anchos=[];
+  for(let c=0;c<nCols;c++){
+    let w=min;
+    for(let r=1;r<aoa.length;r++){
+      const v=aoa[r][c]; if(v==null||v==='')continue;
+      String(v).split('\n').forEach(linea=>{ w=Math.max(w,linea.length); });
+    }
+    anchos.push({wch:Math.min(w,max)+2});
+  }
+  ws['!cols']=anchos;
+}
 /** Aplica a una hoja recién creada (aoa_to_sheet) el formato del modelo oficial, comparado celda por celda
  *  contra "PLANILLA Conciliacion 1ER ETAPA.xlsx" el 06/07/2026: fuente Times New Roman 11 en toda la hoja;
  *  fila de numeración "(1)(2)(3)..." sin borde, centrada, sin negrita; fila de encabezado (nombres de
@@ -2063,6 +2086,7 @@ function construirLibroPorPlan(planCorto){
     const ws=XLSX.utils.aoa_to_sheet(h);
     encabezadoInstitucion(ws,13);
     estilizarPlanilla(ws,{filaNum:2,filaNombres:3,filaFinDatos:h.length,cols:13});
+    autoAjustarColumnas(ws,h);
     // Nombre de hoja: máx. 31 caracteres y sin \ / ? * [ ] : (límites de Excel); "curso división", ej. "1° I".
     let nombreHoja=`${curso} ${div}`.replace(/[\\/?*\[\]:]/g,'-').slice(0,31);
     let n=nombreHoja,i=2; while(nombresUsados.has(n)){n=(nombreHoja.slice(0,28)+' '+i).slice(0,31);i++;}
@@ -2134,6 +2158,7 @@ function genPlanilla(){
   const ws1=XLSX.utils.aoa_to_sheet(h1);
   encabezadoInstitucion(ws1,6);
   estilizarPlanilla(ws1,{filaNum:2,filaNombres:3,filaFinDatos:h1.length,cols:6});
+  autoAjustarColumnas(ws1,h1);
   XLSX.utils.book_append_sheet(wb,ws1,"INSTRUMENTOS DE CREACIÓN");
 
   // ---------- Hoja 2: HORAS QUE POSEE LA INSTITUCION ----------
@@ -2149,6 +2174,7 @@ function genPlanilla(){
   const ws2=XLSX.utils.aoa_to_sheet(h2);
   encabezadoInstitucion(ws2,13);
   estilizarPlanilla(ws2,{filaNum:2,filaNombres:3,filaFinDatos:h2.length,cols:13});
+  autoAjustarColumnas(ws2,h2);
   XLSX.utils.book_append_sheet(wb,ws2,"HORAS QUE POSEE LA INSTITUCION");
 
   // ---------- Hoja 3: DETALLE DE CARGOS ----------
@@ -2176,6 +2202,7 @@ function genPlanilla(){
   const ws3=XLSX.utils.aoa_to_sheet(h3);
   encabezadoInstitucion(ws3,11);
   estilizarPlanilla(ws3,{filaNum:2,filaNombres:3,filaFinDatos:h3.length,cols:11});
+  autoAjustarColumnas(ws3,h3);
   XLSX.utils.book_append_sheet(wb,ws3,"DETALLE DE CARGOS ");
 
   // ---------- Hoja 4: PROPUESTA DE CREACION DE CARGOS ----------
@@ -2218,6 +2245,7 @@ function genPlanilla(){
   const ws4=XLSX.utils.aoa_to_sheet(h4);
   encabezadoInstitucion(ws4,7);
   estilizarPlanilla(ws4,{filaNum:2,filaNombres:3,filaFinDatos:h4.length,cols:7});
+  autoAjustarColumnas(ws4,h4);
   XLSX.utils.book_append_sheet(wb,ws4,"PROPUESTA DE CREACION DE CARGOS");
 
   XLSX.writeFile(wb,"PLANILLA Conciliacion 1ER ETAPA - EPES14.xlsx");msg('Planilla generada');
