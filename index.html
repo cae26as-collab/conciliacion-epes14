@@ -311,6 +311,7 @@ let conTab='horas';
 /* Estado de la card "Planilla de Asignación de Horas" (Generar), separado del Conciliador para no acoplar
  * ambas pestañas. */
 let gaModo='curso', gaPlan='CBS-672', gaCurso='1°', gaDiv='I', gaPlanSolo='CBS-672';
+let gpPlan='CBS-672'; // plan elegido para "Horas por Plan y Curso/División" (ver genPlanillaPorPlan)
 const PLANES_ASIG=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
 function cursosDePlan(plan){return plan==='CBS-672'?['1°','2°','3°']:plan==='BEA-EPJA'?['M5','M6','M7','M8','M9','M10']:['4°','5°','6°'];}
 function divsDeCursoPlan(plan,curso){return (DIVS[plan]&&DIVS[plan][curso])||['I'];}
@@ -682,36 +683,59 @@ async function guardarAsig(espN,falta){
  * como una asignación más: no hizo falta tocar esa lógica). */
 let funcDocSel='';
 function docentesConDisponibilidad(){
-  const cargas=cargasCupof(); const iDcup=ix('DESIGNACIONES','CUPOF');
-  if(iDcup===-1)return [];
-  return filas('DOCENTES').map(f=>f[1]).filter(doc=>
-    designacionesDelDocente(doc).some(f=>{const c=cargas[cupKey(f[iDcup])];return c&&(c.carga-c.usado)>0.001;})
-  ).sort();
+  return filas('DOCENTES').map(f=>f[1]).filter(doc=>cupofDisponiblesDeDocente(doc).length>0).sort();
 }
+/** CUPOF del docente candidatas para la pestaña de Funciones Asignadas: entra si le queda saldo
+ *  disponible (para poder cargar una función nueva) O si ya tiene alguna función asignada contra ella
+ *  (para poder seguir viéndola/editándola/borrándola aunque ya no le quede saldo). Corrección 08/07/2026:
+ *  antes una CUPOF totalmente consumida por funciones desaparecía de la lista sin dejar forma de
+ *  editarla/borrarla. */
 function cupofDisponiblesDeDocente(docente){
   const cargas=cargasCupof(); const iDcup=ix('DESIGNACIONES','CUPOF');
   if(iDcup===-1)return [];
   const vistos=new Set(), out=[];
   designacionesDelDocente(docente).forEach(f=>{
     const cup=f[iDcup], k=cupKey(cup); if(!k||vistos.has(k))return; vistos.add(k);
-    const c=cargas[k]; if(!c||(c.carga-c.usado)<=0.001)return;
-    out.push({cupTexto:cup,key:k,carga:c.carga,usado:c.usado,libre:Math.round((c.carga-c.usado)*10)/10,fila:c.fila});
+    const c=cargas[k]; if(!c)return;
+    const libre=Math.round((c.carga-c.usado)*10)/10;
+    if(libre<=0.001 && !funcionesDeCupofDocente(docente,cup).length)return;
+    out.push({cupTexto:cup,key:k,carga:c.carga,usado:c.usado,libre,fila:c.fila});
   });
   return out;
 }
-/** Si este docente ya tiene una "Función Asignada" guardada contra esta CUPOF (marcada en OBS.), la
- *  devuelve junto con su índice en filas('ASIGNACIONES') para poder editarla/borrarla. */
-function funcionExistente(docente,cupTexto){
+/** TODAS las "Función Asignada" que este docente ya tiene guardadas contra esta CUPOF (marcadas en
+ *  OBS.), cada una con su índice en filas('ASIGNACIONES') para poder editarla/borrarla individualmente.
+ *  Corrección 08/07/2026: antes existía un solo "funcionExistente" que devolvía la PRIMERA coincidencia
+ *  y listo — eso impedía cargar una segunda función distinta contra la fracción restante de la misma
+ *  CUPOF (la usuaria reportó "no me permite hacerlo"): al guardar, el código encontraba esa primera fila
+ *  y la SOBRESCRIBÍA en vez de crear una fila nueva para la porción libre. Ahora se devuelven todas, y
+ *  cada una se edita por su propio índice — la fracción restante se carga como una fila realmente nueva. */
+function funcionesDeCupofDocente(docente,cupTexto){
   const docRow=filas('DOCENTES').find(f=>f[1]===docente); const dni=docRow?String(docRow[0]).replace(/\D/g,''):'';
-  if(!dni)return null;
+  if(!dni)return [];
   const iAdni=ix('ASIGNACIONES','DNI'),iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAo=ix('ASIGNACIONES','OBS.');
   const k=cupKey(cupTexto);
-  const arr=filas('ASIGNACIONES');
+  const arr=filas('ASIGNACIONES'); const out=[];
   for(let i=0;i<arr.length;i++){
     const f=arr[i];
-    if(String(f[iAdni]||'').replace(/\D/g,'')===dni&&cupKey(f[iAcu])===k&&String(f[iAo]||'').includes('FUNCIÓN ASIGNADA'))return{i,f};
+    if(String(f[iAdni]||'').replace(/\D/g,'')===dni&&cupKey(f[iAcu])===k&&String(f[iAo]||'').includes('FUNCIÓN ASIGNADA'))out.push({i,f});
   }
-  return null;
+  return out;
+}
+/** Enumera cada fila que hay que dibujar/guardar en la tabla de Funciones Asignadas del docente actual:
+ *  una por cada función YA guardada contra una CUPOF (editable/borrable, existenteI = su índice real en
+ *  ASIGNACIONES) más, si a esa CUPOF le queda saldo, una fila extra vacía para cargar una función NUEVA
+ *  con la fracción restante (existenteI = null → guardarUnaFuncion crea en vez de editar). Se usa tanto
+ *  para dibujar la tabla como para leerla al guardar, así los dos lados no pueden desincronizarse. */
+function filasFuncionesDe(docente){
+  const out=[];
+  cupofDisponiblesDeDocente(docente).forEach(c=>{
+    const keyBase=c.key.replace(/[^A-Za-z0-9]/g,'_');
+    const existentes=funcionesDeCupofDocente(docente,c.cupTexto);
+    existentes.forEach(ex=>out.push({cupTexto:c.cupTexto,libre:c.libre,rowId:`${keyBase}_r${ex.i}`,existenteI:ex.i,fila:ex.f}));
+    if(c.libre>0.001)out.push({cupTexto:c.cupTexto,libre:c.libre,rowId:`${keyBase}_new`,existenteI:null,fila:null});
+  });
+  return out;
 }
 function rConciliadorFunciones(){
   const v=document.getElementById('conBody');
@@ -723,40 +747,41 @@ function rConciliadorFunciones(){
   const opcionesFunc=filas('FUNCIONES').map(f=>f[0]).filter(Boolean);
   let filasHtml='';
   if(funcDocSel){
-    const cupofs=cupofDisponiblesDeDocente(funcDocSel);
-    if(!cupofs.length){
-      filasHtml='<p class="mini">Este docente no tiene CUPOF con horas disponibles.</p>';
+    const filasF=filasFuncionesDe(funcDocSel);
+    if(!filasF.length){
+      filasHtml='<p class="mini">Este docente no tiene CUPOF con horas disponibles ni funciones asignadas.</p>';
     } else {
-      const iAh=ix('ASIGNACIONES','HS'), iAp=ix('ASIGNACIONES','PLAN DESTINO');
+      const iAh=ix('ASIGNACIONES','HS'), iAp=ix('ASIGNACIONES','PLAN DESTINO'), iAe=ix('ASIGNACIONES','ESPACIO DESTINO');
       const planesNuevos=['CBS-672','BCS','BCN','BEA','BEA-EPJA'];
       // Un solo botón "Guardar todo" al pie: guarda en lote todas las filas que tengan Plan+Función
       // completos (pedido de la usuaria 07/07/2026 — antes había un botón por fila, incómodo cuando un
       // docente tiene muchas CUPOF). Los botones por fila quedaron solo para 🗑 Borrar (acción puntual,
-      // sí tiene sentido una por una), identificado por índice numérico (ex.i), nunca por texto de CUPOF
+      // sí tiene sentido una por una), identificado por índice numérico, nunca por texto de CUPOF
       // incrustado en el atributo onclick — eso fue el bug real: JSON.stringify(c.cupTexto) generaba
       // comillas dobles que rompían el atributo HTML onclick="...", dejando el handler con sintaxis
       // inválida (el navegador simplemente no lo registraba: por eso el botón no se deshabilitaba ni
       // pasaba nada al hacer click, sin error visible). guardarFuncionesLote() ya no necesita ese dato
-      // por atributo: relee todo directo del DOM por fila, usando cupofDisponiblesDeDocente(funcDocSel).
+      // por atributo: relee todo directo del DOM por fila, usando filasFuncionesDe(funcDocSel).
+      const tieneVarias=cupTexto=>filasF.filter(x=>x.cupTexto===cupTexto).length>1;
       filasHtml=`<div class="tabla-wrap"><table><tr><th>CUPOF</th><th>Hs. disponibles</th><th>Hs a Asignar</th><th>Plan</th><th>Función Asignada</th><th></th></tr>
-      ${cupofs.map(c=>{
-        const ex=funcionExistente(funcDocSel,c.cupTexto);
-        const keyId=c.key.replace(/[^A-Za-z0-9]/g,'_');
-        const hsVal=ex?unNum(ex.f[iAh]):c.libre;
-        const funcVal=ex?(ex.f[ix('ASIGNACIONES','ESPACIO DESTINO')]||''):'';
-        const planVal=ex?(PLAN_MAP[ex.f[iAp]]||''):'';
-        return `<tr><td class="cupofcell">${esc(c.cupTexto)}</td><td>${c.libre}${ex?` <span class="mini">(+${unNum(ex.f[iAh])} ya asignada)</span>`:''}</td>
-        <td><input id="fh_${keyId}" type="number" min="0.5" step="0.5" value="${hsVal}" style="width:70px"></td>
-        <td><select id="fp_${keyId}"><option value="">— plan —</option>${planesNuevos.map(p=>`<option ${p===planVal?'selected':''}>${p}</option>`).join('')}</select></td>
-        <td><input id="ff_${keyId}" list="funcOpts" value="${esc(funcVal)}" style="min-width:220px" placeholder="Escribir o elegir…"></td>
-        <td>${ex?`<button class="b mini sec" onclick="accion(this,()=>borrarFuncion(${ex.i}))">🗑 Borrar</button>`:''}</td></tr>`;
+      ${filasF.map(r=>{
+        const esNueva=r.existenteI===null;
+        const hsVal=esNueva?r.libre:unNum(r.fila[iAh]);
+        const funcVal=esNueva?'':(r.fila[iAe]||'');
+        const planVal=esNueva?'':(PLAN_MAP[r.fila[iAp]]||'');
+        return `<tr><td class="cupofcell">${esc(r.cupTexto)}${esNueva&&tieneVarias(r.cupTexto)?' <span class="mini">(fracción restante)</span>':''}</td>
+        <td>${r.libre}</td>
+        <td><input id="fh_${r.rowId}" type="number" min="0.5" step="0.5" value="${hsVal}" style="width:70px"></td>
+        <td><select id="fp_${r.rowId}"><option value="">— plan —</option>${planesNuevos.map(p=>`<option ${p===planVal?'selected':''}>${p}</option>`).join('')}</select></td>
+        <td><input id="ff_${r.rowId}" list="funcOpts" value="${esc(funcVal)}" style="min-width:220px" placeholder="Escribir o elegir…"></td>
+        <td>${esNueva?'':`<button class="b mini sec" onclick="accion(this,()=>borrarFuncion(${r.existenteI}))">🗑 Borrar</button>`}</td></tr>`;
       }).join('')}
       </table></div>
       <div class="fila" style="margin-top:8px"><button class="b" onclick="accion(this,guardarFuncionesLote)">💾 Guardar todo</button></div>`;
     }
   }
   v.innerHTML=`<div class="card">
-    <p class="mini">Elegí un docente para ver sus CUPOF con horas disponibles y asignarles una Función (ej. Acompañamiento de Trayectorias). Se guarda como una asignación más —sin curso ni división— y aparece en Actas/Disposiciones igual que cualquier otra.</p>
+    <p class="mini">Elegí un docente para ver sus CUPOF con horas disponibles y asignarles una Función (ej. Acompañamiento de Trayectorias). Si a una CUPOF le queda una fracción libre después de asignar una función, aparece una fila extra para cargarle otra función distinta con esa fracción. Se guarda como una asignación más —sin curso ni división— y aparece en Actas/Disposiciones igual que cualquier otra.</p>
     <label>Docente</label><select id="fDoc"><option value="">— elegir —</option>${docentes.map(d=>`<option ${d===funcDocSel?'selected':''}>${esc(d)}</option>`).join('')}</select>
     <datalist id="funcOpts">${opcionesFunc.map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
     ${filasHtml}
@@ -764,12 +789,14 @@ function rConciliadorFunciones(){
   document.getElementById('fDoc').onchange=e=>{funcDocSel=e.target.value;rConciliadorFunciones();};
 }
 /** Guarda (crea o edita) UNA fila de Función Asignada ya validada — usada en lote por
- *  guardarFuncionesLote(). Lanza si algo falla, para que el lote pueda contar/reportar errores por fila. */
+ *  guardarFuncionesLote(). `r.existenteI` (índice real en ASIGNACIONES, o null) decide edición vs. alta:
+ *  ya NO se re-detecta "la existente" buscando por CUPOF+DNI (eso era lo que impedía tener dos funciones
+ *  distintas sobre la misma CUPOF — ver filasFuncionesDe). Lanza si algo falla, para que el lote pueda
+ *  contar/reportar errores por fila. */
 async function guardarUnaFuncion(docente,r){
   const cargas=cargasCupof(); const k=cupKey(r.cupTexto); const c=cargas[k];
   if(!c)throw new Error('la CUPOF ya no tiene carga nominal (revisá el Validador)');
-  const existente=funcionExistente(docente,r.cupTexto);
-  const propio=existente?unNum(existente.f[ix('ASIGNACIONES','HS')]):0;
+  const propio=r.existenteI!=null?unNum(filas('ASIGNACIONES')[r.existenteI][ix('ASIGNACIONES','HS')]):0;
   const libre=Math.round((c.carga-c.usado+propio)*10)/10;
   let hs=r.hs; if(hs>libre)hs=libre;
   const yaExisteFuncion=filas('FUNCIONES').some(f=>String(f[0]).trim().toLowerCase()===r.funcion.toLowerCase());
@@ -783,27 +810,34 @@ async function guardarUnaFuncion(docente,r){
   const vals=aC.map(col=>({'FUENTE':'app (función)','PLAN DESTINO':PLAN_INV[r.planNuevo]||r.planNuevo,'CURSO':'','DIV.':'',
     'TURNO':cFila?cFila[iCturno]:'','ESPACIO DESTINO':r.funcion,'HS':hs,'CUPOF (texto origen)':r.cupTexto,
     'DOCENTE':docente,'DNI':docRow?docRow[0]:'','OBS.':'FUNCIÓN ASIGNADA'}[col]??''));
-  if(existente){await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:existente.i+1,valores:vals});BD['ASIGNACIONES'].filas[existente.i]=vals.map(String);}
+  if(r.existenteI!=null){await apiPost({action:'editar',entidad:'ASIGNACIONES',fila:r.existenteI+1,valores:vals});BD['ASIGNACIONES'].filas[r.existenteI]=vals.map(String);}
   else{await apiPost({action:'crear',entidad:'ASIGNACIONES',valores:vals});BD['ASIGNACIONES'].filas.push(vals.map(String));}
   await sincronizarParciales(k);
 }
 /** Guarda en lote TODAS las filas de la tabla de Funciones Asignadas del docente actual que tengan
  *  Plan + Función + Hs completos (pedido de la usuaria 07/07/2026: un solo botón para todas las CUPOF
  *  del agente, en vez de un botón por fila). Relee los valores directo del DOM por fila (fh_/fp_/ff_ +
- *  keyId), recalculando la misma lista que se usó para dibujar la tabla — así no hace falta pasar el
- *  texto de la CUPOF por un atributo onclick (eso causaba el bug real reportado: JSON.stringify(cupTexto)
- *  metía comillas dobles dentro de un atributo onclick="..." también delimitado por comillas dobles,
- *  cortando el atributo a la mitad; el navegador quedaba con un handler de sintaxis inválida y por eso el
- *  click no hacía nada — ni deshabilitaba el botón ni guardaba, sin ningún error visible). Muestra
- *  progreso fila por fila con msg(), igual que genActasTodas(). */
+ *  rowId), usando la MISMA enumeración que dibujó la tabla (filasFuncionesDe) — cada fila ya sabe si es
+ *  una edición (existenteI) o una alta nueva, no hace falta re-detectarlo ni pasar texto de CUPOF por un
+ *  atributo onclick (eso causaba el bug real reportado: JSON.stringify(cupTexto) metía comillas dobles
+ *  dentro de un atributo onclick="..." también delimitado por comillas dobles, cortando el atributo a la
+ *  mitad; el navegador quedaba con un handler de sintaxis inválida y por eso el click no hacía nada — ni
+ *  deshabilitaba el botón ni guardaba, sin ningún error visible). Muestra progreso fila por fila con
+ *  msg(), igual que genActasTodas(). */
 async function guardarFuncionesLote(){
   const docente=funcDocSel; if(!docente)return msg('Elegí un docente');
-  const cupofs=cupofDisponiblesDeDocente(docente);
-  if(!cupofs.length)return msg('Este docente no tiene CUPOF con horas disponibles.');
-  const pendientes=cupofs.map(c=>{
-    const keyId=c.key.replace(/[^A-Za-z0-9]/g,'_');
-    const hsInput=document.getElementById('fh_'+keyId), funcInput=document.getElementById('ff_'+keyId), planInput=document.getElementById('fp_'+keyId);
-    return {cupTexto:c.cupTexto,hs:parseFloat(hsInput?.value)||0,funcion:(funcInput?.value||'').trim(),planNuevo:planInput?.value||''};
+  // Refresca la BD desde el servidor ANTES de calcular saldos/filas existentes — no solo la copia en
+  // memoria del navegador. Motivo (08/07/2026): la usuaria detectó CUPOF con función duplicada y horas
+  // asignadas por encima de su carga real. La causa más probable es trabajar sobre una copia de la BD
+  // desactualizada (pestaña abierta un rato, o dos pestañas/sesiones abiertas a la vez). Refrescar acá
+  // reduce esa ventana al mínimo posible (entre el refresh y el guardado real, sin pasos intermedios).
+  try{ const j=await apiGet({action:'bd',token:TOKEN}); BD=j.bd; }
+  catch(e){ return msg('No se pudo refrescar la base antes de guardar: '+e.message); }
+  const filasF=filasFuncionesDe(docente);
+  if(!filasF.length)return msg('Este docente no tiene CUPOF con horas disponibles ni funciones asignadas.');
+  const pendientes=filasF.map(r=>{
+    const hsInput=document.getElementById('fh_'+r.rowId), funcInput=document.getElementById('ff_'+r.rowId), planInput=document.getElementById('fp_'+r.rowId);
+    return {cupTexto:r.cupTexto,existenteI:r.existenteI,hs:parseFloat(hsInput?.value)||0,funcion:(funcInput?.value||'').trim(),planNuevo:planInput?.value||''};
   }).filter(r=>r.planNuevo&&r.funcion&&r.hs>0);
   if(!pendientes.length)return msg('Completá Plan, Función y Hs a Asignar en al menos una fila para guardar.');
   let ok=0; const errores=[];
@@ -1886,7 +1920,13 @@ function rGenerar(){
    </div>
    <div class="fila" style="margin-top:10px">
     <button class="b" onclick="accion(this,()=>genPlanillaAsignacion('doc'))">Descargar Word</button>
-    <button class="b" onclick="accion(this,()=>genPlanillaAsignacion('pdf'))">Descargar PDF</button></div></div>`;
+    <button class="b" onclick="accion(this,()=>genPlanillaAsignacion('pdf'))">Descargar PDF</button></div></div>
+  <div class="card"><h2>Horas por Plan y Curso/División</h2>
+   <p class="mini">Mismas columnas que "Horas que posee la institución" (Hoja 2), pero un archivo Excel por plan con una hoja para cada curso y división.</p>
+   <div class="fila" style="margin-top:6px"><div><label>Plan</label><select id="gpPlan">${PLANES_ASIG.map(p=>`<option ${p===gpPlan?'selected':''}>${p}</option>`).join('')}</select></div></div>
+   <div class="fila" style="margin-top:10px">
+    <button class="b" onclick="accion(this,()=>genPlanillaPorPlan(document.getElementById('gpPlan').value))">Descargar plan (.xlsx)</button>
+    <button class="b sec" onclick="accion(this,genPlanillaPorPlanTodas)">TODOS los planes (ZIP)</button></div></div>`;
   document.getElementById('gaModo').onchange=e=>{gaModo=e.target.value;rGenerar();};
   if(gaModo==='curso'){
     document.getElementById('gaPlan').onchange=e=>{gaPlan=e.target.value;rGenerar();};
@@ -1894,6 +1934,7 @@ function rGenerar(){
     document.getElementById('gaDiv').onchange=e=>{gaDiv=e.target.value;rGenerar();};
   }
   if(gaModo==='plan') document.getElementById('gaPlanSolo').onchange=e=>{gaPlanSolo=e.target.value;rGenerar();};
+  document.getElementById('gpPlan').onchange=e=>{gpPlan=e.target.value;};
 }
 /* ============ PLANILLA OFICIAL: helpers de formato y de nombres completos (agregado 06/07/2026) ============ */
 const INSTITUCION_HEADER='EPES N° 14 "Tte. Cnel. Francisco Magín Guerrero" - CUE: 3400532-00 - Comandante Fontana';
@@ -1957,6 +1998,105 @@ function encabezadoInstitucion(ws,cols){
   if(ws[addr])ws[addr].s={font:{...FUENTE_PLANILLA,bold:true}};
   ws['!merges']=(ws['!merges']||[]).concat({s:{r:0,c:0},e:{r:0,c:cols-1}});
 }
+const H2_COLS=["CURSO","DIVISION","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","ESPACIO CURRICULAR","CARGA HORARIA\n(expresar en valores numéricos)","CUPOF\n(incluir todas las CUPOF habilitadas por el instrumento legal)",
+   "ADECUACIÓN A LA EGB3/POLIMODAL","ADECUACIÓN A LA RESOLUCIÓN N° 672/19 MCyE y RESOL N°……MCyE BACHILLER EN…","DOCENTE A CARGO","SITUACIÓN REVISTA","OBSERVACIONES\n(En Actividad, Lic. Art 22, 23, 24, UT, etc)"];
+/** Arma, por cada CUPOF de "Horas", la misma fila que la Hoja 2 de la planilla oficial ("HORAS QUE POSEE
+ *  LA INSTITUCIÓN"): CUPOF, carga, docente a cargo (titular/interino con la suplente anotada en
+ *  Observaciones), situación de revista, y a dónde quedó reasignada (columna "dest", no forma parte de las
+ *  13 columnas de salida pero no hace falta acá). Devuelve además `planFull` (el valor tal cual está en
+ *  CUPOF.PLAN, ej. "CBS (672/19)") para poder filtrar por plan en genPlanillaPorPlan() sin tener que volver
+ *  a levantar CUPOF/DESIGNACIONES/ASIGNACIONES cada vez. Extraído el 08/07/2026 desde genPlanilla() (antes
+ *  este cálculo estaba inline, solo para la Hoja 2) para reutilizarlo tal cual en la nueva planilla "por
+ *  Plan y Curso/División" — misma información, no se cambió ninguna columna ni criterio existente. */
+function construirFilasHoja2(){
+  const iCuP=ix('CUPOF','PLAN'), iCuC=ix('CUPOF','CURSO'), iCuD=ix('CUPOF','DIV.'), iCuCl=ix('CUPOF','CLASE'),
+        iCuCa=ix('CUPOF','CARGA'), iCuEsp=ix('CUPOF','ESPACIO'), iCuInst=ix('CUPOF','INSTRUMENTO'), iCuFecha=ix('CUPOF','FECHA');
+  const desg=filas('DESIGNACIONES'), asg=filas('ASIGNACIONES');
+  const iAcu=ix('ASIGNACIONES','CUPOF (texto origen)'),iAp=ix('ASIGNACIONES','PLAN DESTINO'),iAc2=ix('ASIGNACIONES','CURSO'),
+        iAd=ix('ASIGNACIONES','DIV.'),iAe=ix('ASIGNACIONES','ESPACIO DESTINO'),iAh=ix('ASIGNACIONES','HS');
+  return filas('CUPOF').filter(f=>f[iCuCl]==='Horas').map(f=>{
+    const k=cupKey(f[0]);
+    const tit=desg.filter(d=>cupKey(d[2])===k&&d[3]!=='SUPLENTE'),sup=desg.filter(d=>cupKey(d[2])===k&&d[3]==='SUPLENTE');
+    const q=tit[0]||sup[0]||['','(SIN DESIGNACIÓN)','',''];
+    // Si hay titular/interino Y suplente: el titular/interino sigue siendo "DOCENTE A CARGO" (arriba, q=tit[0]
+    // tiene prioridad) y las horas de esa cupof se computan sobre él/ella (ver cuposActivosDeDocente en
+    // balanceDocentes) — la suplente que la cubre se documenta acá, en OBSERVACIONES, con nombre+DNI+"(S)".
+    const obs=[sup.length&&tit.length?'Suplente: '+sup.map(x=>`${x[1]}, DNI ${x[0]} (S)`).join('; '):'',!tit.length&&sup.length?'Suplente sin titular/interino':''].filter(Boolean).join('. ');
+    const dest=asg.filter(a=>cupKey(a[iAcu])===k).map(a=>`${a[iAp]} — ${a[iAe]} — ${a[iAc2]} (${a[iAh]} hs)`).join(' / ');
+    const planNom=nombrePlan(f[iCuP]), espNom=nombreEspacio(f[iCuEsp]);
+    return {planFull:String(f[iCuP]||''),plan:planNom,curso:String(f[iCuC]||''),div:String(f[iCuD]||''),espacio:espNom,
+      row:[f[iCuC],f[iCuD],f[iCuInst]||'',f[iCuFecha]||'',planNom,espNom,f[iCuCa],f[0],'',dest,q[1],q[3]||'',obs]};
+  });
+}
+/** Pares [curso,división] reales que existen en la hoja CURSOS para un plan dado (nombre completo tal cual
+ *  está en CURSOS.PLAN/CUPOF.PLAN, ej. "CBS (672/19)") — misma fuente que usa la Hoja 1 de la planilla
+ *  oficial (parsea CURSOS.DIVISIÓN separado por "/"). Se prefirió esto a los arrays fijos cursosDePlan()/
+ *  divsDeCursoPlan() (pensados solo para el selector de "Asignación de Horas imprimible") porque acá
+ *  interesa reflejar exactamente lo que hay cargado en la BD, plan por plan, no una lista hardcodeada. */
+function cursosDivisionesDePlan(planFull){
+  const iCrP=ix('CURSOS','PLAN'),iCrC=ix('CURSOS','CURSO'),iCrD=ix('CURSOS','DIVISIÓN');
+  const vistos=new Set(), out=[];
+  filas('CURSOS').filter(f=>String(f[iCrP]).trim().toUpperCase()===String(planFull).trim().toUpperCase()).forEach(f=>{
+    const divs=String(f[iCrD]||'').split('/').map(x=>x.trim()).filter(Boolean);
+    divs.forEach(d=>{const k=f[iCrC]+'|'+d; if(vistos.has(k))return; vistos.add(k); out.push({curso:String(f[iCrC]||''),div:d});});
+  });
+  return out;
+}
+/** Arma el libro (workbook) de "Horas por Plan y Curso/División" para UN plan (sigla corta, ej. 'CBS-672'):
+ *  una hoja por cada curso+división real de ese plan (cursosDivisionesDePlan), con las mismas 13 columnas
+ *  y el mismo formato que la Hoja 2 de la planilla oficial (construirFilasHoja2), filtradas a ese curso y
+ *  división. Devuelve null si el plan no tiene ningún curso cargado en CURSOS (para poder avisar en vez de
+ *  generar un Excel vacío). Pedido de la usuaria 08/07/2026: poder generar, por ejemplo, un archivo solo
+ *  del CBS con una hoja distinta para cada curso y división. */
+function construirLibroPorPlan(planCorto){
+  const planFull=PLAN_INV[planCorto]||planCorto;
+  const combos=cursosDivisionesDePlan(planFull);
+  if(!combos.length)return null;
+  const todasFilas=construirFilasHoja2().filter(x=>String(x.planFull).trim().toUpperCase()===String(planFull).trim().toUpperCase());
+  const wb=XLSX.utils.book_new();
+  const nombresUsados=new Set();
+  combos.forEach(({curso,div})=>{
+    const filasCombo=todasFilas.filter(x=>x.curso===curso&&x.div===div).sort((a,b)=>a.espacio.localeCompare(b.espacio));
+    const h=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],H2_COLS];
+    if(filasCombo.length)filasCombo.forEach(x=>h.push(x.row));
+    else h.push(['(sin CUPOF de horas cargadas para este curso y división)']);
+    const ws=XLSX.utils.aoa_to_sheet(h);
+    encabezadoInstitucion(ws,13);
+    estilizarPlanilla(ws,{filaNum:2,filaNombres:3,filaFinDatos:h.length,cols:13});
+    // Nombre de hoja: máx. 31 caracteres y sin \ / ? * [ ] : (límites de Excel); "curso división", ej. "1° I".
+    let nombreHoja=`${curso} ${div}`.replace(/[\\/?*\[\]:]/g,'-').slice(0,31);
+    let n=nombreHoja,i=2; while(nombresUsados.has(n)){n=(nombreHoja.slice(0,28)+' '+i).slice(0,31);i++;}
+    nombresUsados.add(n);
+    XLSX.utils.book_append_sheet(wb,ws,n);
+  });
+  return wb;
+}
+function genPlanillaPorPlan(planCorto){
+  if(typeof XLSX==='undefined')return msg('No cargó la librería de Excel');
+  const wb=construirLibroPorPlan(planCorto);
+  if(!wb)return msg(`No hay cursos cargados para ${planCorto} en la hoja CURSOS.`);
+  XLSX.writeFile(wb,`Horas por curso - ${planCorto}.xlsx`);
+}
+async function genPlanillaPorPlanTodas(){
+  if(typeof XLSX==='undefined')return msg('No cargó la librería de Excel');
+  const zip=new JSZip();
+  let alguno=false;
+  for(let i=0;i<PLANES_ASIG.length;i++){
+    const planCorto=PLANES_ASIG[i];
+    msg(`Generando planillas por curso… (${i+1}/${PLANES_ASIG.length}) ${planCorto}`,60000);
+    const wb=construirLibroPorPlan(planCorto);
+    if(!wb)continue;
+    alguno=true;
+    const buf=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+    zip.file(`Horas por curso - ${planCorto}.xlsx`,buf);
+  }
+  if(!alguno)return msg('Ningún plan tiene cursos cargados en la hoja CURSOS.');
+  msg('Comprimiendo ZIP…',60000);
+  const blob=await zip.generateAsync({type:'blob'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='Horas por curso - TODOS los planes.zip';a.click();
+  msg('Generadas las planillas de todos los planes dentro de un ZIP');
+}
 function genPlanilla(){
   if(typeof XLSX==='undefined')return msg('No cargó la librería de Excel');
   const {problemas,excedidas,huerfanas,cargaMal}=calcularValidacion();
@@ -1998,23 +2138,12 @@ function genPlanilla(){
 
   // ---------- Hoja 2: HORAS QUE POSEE LA INSTITUCION ----------
   // Filas ordenadas por Plan, Curso, División y Espacio Curricular (nombre completo); Plan y Espacio ahora
-  // muestran el nombre completo (pedido de la usuaria 06/07/2026).
-  const h2=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],
-    ["CURSO","DIVISION","INSTRUMENTO LEGAL DE CREACIÓN DEL CURSO","FECHA DEL INSTRUMENTO","PLAN DE ESTUDIOS","ESPACIO CURRICULAR","CARGA HORARIA\n(expresar en valores numéricos)","CUPOF\n(incluir todas las CUPOF habilitadas por el instrumento legal)",
-     "ADECUACIÓN A LA EGB3/POLIMODAL","ADECUACIÓN A LA RESOLUCIÓN N° 672/19 MCyE y RESOL N°……MCyE BACHILLER EN…","DOCENTE A CARGO","SITUACIÓN REVISTA","OBSERVACIONES\n(En Actividad, Lic. Art 22, 23, 24, UT, etc)"]];
-  const filasH2=filas('CUPOF').filter(f=>f[iCuCl]==='Horas').map(f=>{
-    const k=cupKey(f[0]);
-    const tit=desg.filter(d=>cupKey(d[2])===k&&d[3]!=='SUPLENTE'),sup=desg.filter(d=>cupKey(d[2])===k&&d[3]==='SUPLENTE');
-    const q=tit[0]||sup[0]||['','(SIN DESIGNACIÓN)','',''];
-    // Si hay titular/interino Y suplente: el titular/interino sigue siendo "DOCENTE A CARGO" (arriba, q=tit[0]
-    // tiene prioridad) y las horas de esa cupof se computan sobre él/ella (ver cuposActivosDeDocente en
-    // balanceDocentes) — la suplente que la cubre se documenta acá, en OBSERVACIONES, con nombre+DNI+"(S)".
-    const obs=[sup.length&&tit.length?'Suplente: '+sup.map(x=>`${x[1]}, DNI ${x[0]} (S)`).join('; '):'',!tit.length&&sup.length?'Suplente sin titular/interino':''].filter(Boolean).join('. ');
-    const dest=asg.filter(a=>cupKey(a[iAcu])===k).map(a=>`${a[iAp]} — ${a[iAe]} — ${a[iAc2]} (${a[iAh]} hs)`).join(' / ');
-    const planNom=nombrePlan(f[iCuP]), espNom=nombreEspacio(f[iCuEsp]);
-    return {plan:planNom,curso:String(f[iCuC]||''),div:String(f[iCuD]||''),espacio:espNom,
-      row:[f[iCuC],f[iCuD],f[iCuInst]||'',f[iCuFecha]||'',planNom,espNom,f[iCuCa],f[0],'',dest,q[1],q[3]||'',obs]};
-  });
+  // muestran el nombre completo (pedido de la usuaria 06/07/2026). La construcción de filas se extrajo a
+  // construirFilasHoja2() (ver más abajo) para reutilizarla en genPlanillaPorPlan()/genPlanillaPorPlanTodas()
+  // (planillas de "Horas por Plan y Curso/División", pedido 08/07/2026): misma información, pero un archivo
+  // por plan con una hoja por curso+división en vez de todo junto en una sola hoja.
+  const h2=[[INSTITUCION_HEADER],["(1)","(2)","(3)","(4)","(5)","(6)","(7)","(8)","(9)","(10)","(11)","(12)","(13)"],H2_COLS];
+  const filasH2=construirFilasHoja2();
   filasH2.sort((a,b)=>a.plan.localeCompare(b.plan)||a.curso.localeCompare(b.curso,'es',{numeric:true})||a.div.localeCompare(b.div)||a.espacio.localeCompare(b.espacio));
   filasH2.forEach(x=>h2.push(x.row));
   const ws2=XLSX.utils.aoa_to_sheet(h2);
